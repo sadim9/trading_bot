@@ -44,6 +44,12 @@ async def get_db() -> AsyncSession:
 
 async def init_db():
     """Create all tables (used on first startup)."""
+    import logging
+    log = logging.getLogger("uvicorn.error")
     from server.db import models  # noqa: F401 — ensure models are registered
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all, checkfirst=True)
+    except Exception as e:
+        # Tables may already exist due to race condition with multiple workers — safe to ignore
+        log.warning(f"init_db: {e}")
