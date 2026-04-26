@@ -1,0 +1,54 @@
+# ── Stage 1: Builder ──────────────────────────────────────────
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ libpq-dev curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-server.txt .
+RUN pip install --no-cache-dir --upgrade pip \
+ && pip install --no-cache-dir --prefix=/install -r requirements-server.txt
+
+
+# ── Stage 2: Runtime ──────────────────────────────────────────
+FROM python:3.11-slim AS runtime
+
+# Security: run as non-root user
+RUN groupadd -r trading && useradd -r -g trading -d /app trading
+
+WORKDIR /app
+
+# Install runtime-only system libs
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy installed packages from builder
+COPY --from=builder /install /usr/local
+
+# Copy application code
+COPY --chown=trading:trading . .
+
+# Remove dev/test artifacts
+RUN find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; true \
+ && find . -name "*.pyc" -delete 2>/dev/null; true
+
+USER trading
+
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD curl -fsS http://localhost:8000/health || exit 1
+
+CMD ["uvicorn", "server.main:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--workers", "2", \
+     "--loop", "uvloop", \
+     "--http", "httptools", \
+     "--access-log", \
+     "--log-level", "info"]

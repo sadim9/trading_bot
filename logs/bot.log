@@ -1,0 +1,3 @@
+2026-04-17 11:28:31 | order_manager          | INFO     | Signal received: BUY 1.000000 AAPL @ MARKET | SL 147.000000 | TP 156.000000 | 
+2026-04-17 11:28:31 | order_manager          | WARNING  | No broker configured — simulating fill
+2026-04-17 11:28:31 | order_manager          | INFO     | Trade logged: NO-BROKER-1776425311 | simulated

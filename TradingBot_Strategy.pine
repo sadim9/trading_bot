@@ -1,0 +1,350 @@
+//@version=6
+// ══════════════════════════════════════════════════════════════════════════════
+//  TRADING BOT PRO — Multi-Agent Strategy
+//  Direct port of the Python trading bot's 4-agent weighted signal engine
+//
+//  Signal Weights (matching Python bot):
+//    Agent 1 — Trend     (EMA 50/200 + MACD)          → 30%
+//    Agent 2 — Momentum  (Breakout + Volume spike)     → 30%
+//    Agent 3 — Mean Rev  (RSI + Bollinger Bands)       → 20%
+//    Agent 4 — Volatility(ATR-based regime filter)     → 20%
+//
+//  Entry:
+//    BUY  when composite score > +BUY_THRESHOLD
+//    SELL when composite score < -SELL_THRESHOLD
+//
+//  Risk management per trade:
+//    Stop-Loss   : ATR-based (default 1.5× ATR)
+//    Take-Profit : 2× the stop-loss distance (2:1 R/R)
+//    Signal label: shown with score + reason on chart
+// ══════════════════════════════════════════════════════════════════════════════
+
+strategy(
+  title             = "Trading Bot Pro — Multi-Agent",
+  shorttitle        = "TBP-MA",
+  overlay           = true,
+  default_qty_type  = strategy.percent_of_equity,
+  default_qty_value = 10,
+  initial_capital   = 100000,
+  commission_type   = strategy.commission.percent,
+  commission_value  = 0.05,
+  max_bars_back     = 500,
+  max_labels_count  = 500
+)
+
+// ─── INPUTS ───────────────────────────────────────────────────────────────────
+grp_trend = "── Agent 1: Trend (30%) ──"
+ema_fast_len  = input.int(50,  "EMA Fast",    group=grp_trend, minval=5)
+ema_slow_len  = input.int(200, "EMA Slow",    group=grp_trend, minval=10)
+macd_fast     = input.int(12,  "MACD Fast",   group=grp_trend, minval=2)
+macd_slow     = input.int(26,  "MACD Slow",   group=grp_trend, minval=2)
+macd_sig_len  = input.int(9,   "MACD Signal", group=grp_trend, minval=2)
+
+grp_mom = "── Agent 2: Momentum (30%) ──"
+brk_len       = input.int(20,  "Breakout Lookback", group=grp_mom, minval=5)
+vol_mult      = input.float(2.0,"Volume Spike ×",   group=grp_mom, step=0.5)
+
+grp_rev = "── Agent 3: Mean Reversion (20%) ──"
+rsi_len       = input.int(14,  "RSI Period",      group=grp_rev, minval=2)
+rsi_ob        = input.int(70,  "RSI Overbought",  group=grp_rev, minval=55)
+rsi_os        = input.int(30,  "RSI Oversold",    group=grp_rev, maxval=45)
+bb_len        = input.int(20,  "BB Period",       group=grp_rev, minval=5)
+bb_mult       = input.float(2.0,"BB Std Dev",     group=grp_rev, step=0.5)
+
+grp_risk = "── Risk Management ──"
+atr_len       = input.int(14,  "ATR Period",      group=grp_risk, minval=5)
+sl_atr_mult   = input.float(1.5,"SL × ATR",       group=grp_risk, step=0.25)
+rr_ratio      = input.float(2.0,"R:R Ratio",      group=grp_risk, step=0.5)
+
+grp_sig = "── Signal Thresholds ──"
+buy_thresh    = input.float(0.25,"BUY Threshold  (0–1)", group=grp_sig, step=0.05, minval=0.05, maxval=0.95)
+sell_thresh   = input.float(0.25,"SELL Threshold (0–1)", group=grp_sig, step=0.05, minval=0.05, maxval=0.95)
+
+grp_disp = "── Display ──"
+show_emas     = input.bool(true,  "Show EMA 50 / 200",      group=grp_disp)
+show_bb       = input.bool(true,  "Show Bollinger Bands",   group=grp_disp)
+show_labels   = input.bool(true,  "Show Signal Labels",     group=grp_disp)
+show_sl_tp    = input.bool(true,  "Show SL / TP Lines",     group=grp_disp)
+show_sr       = input.bool(true,  "Show Support/Resistance",group=grp_disp)
+
+// ─── COLOURS ─────────────────────────────────────────────────────────────────
+col_buy       = color.new(#00E676, 0)
+col_sell      = color.new(#FF5252, 0)
+col_ema_fast  = color.new(#F7931A, 0)
+col_ema_slow  = color.new(#2196F3, 0)
+col_bb        = color.new(#9B59B6, 60)
+col_sl        = color.new(#FF5252, 20)
+col_tp        = color.new(#00E676, 20)
+col_sr_s      = color.new(#26A69A, 50)
+col_sr_r      = color.new(#EF5350, 50)
+
+// ─── AGENT 1: TREND (EMA + MACD) — weight 0.30 ───────────────────────────────
+ema_f = ta.ema(close, ema_fast_len)
+ema_s = ta.ema(close, ema_slow_len)
+
+// EMA score: ±0.50, bonus ±0.15 on fresh cross
+ema_bull   = ema_f > ema_s
+ema_cross  = ta.crossover(ema_f, ema_s)
+ema_dcross = ta.crossunder(ema_f, ema_s)
+
+ema_score = ema_bull ? (ema_cross ? 0.65 : 0.50) : (ema_dcross ? -0.65 : -0.50)
+ema_score := close > ema_f and ema_score > 0 ? ema_score + 0.10 :
+             close < ema_f and ema_score < 0 ? ema_score - 0.10 : ema_score
+
+// MACD score: ±0.50 max
+[macd_line, macd_sig_line, macd_hist] = ta.macd(close, macd_fast, macd_slow, macd_sig_len)
+macd_bull      = macd_line > macd_sig_line
+macd_just_bull = ta.crossover(macd_line, macd_sig_line)
+macd_just_bear = ta.crossunder(macd_line, macd_sig_line)
+hist_rising    = macd_hist > macd_hist[1]
+
+macd_score = macd_bull ? (macd_just_bull ? 0.50 : 0.30) : (macd_just_bear ? -0.50 : -0.30)
+macd_score := hist_rising ? macd_score + 0.10 : macd_score - 0.10
+macd_score := math.max(-1.0, math.min(1.0, macd_score))
+
+trend_score = (ema_score + macd_score) / 2.0
+trend_score := math.max(-1.0, math.min(1.0, trend_score))
+
+// ─── AGENT 2: MOMENTUM (Breakout + Volume) — weight 0.30 ────────────────────
+roll_hi = ta.highest(high, brk_len)
+roll_lo = ta.lowest(low, brk_len)
+
+brk_up = close > roll_hi[1]
+brk_dn = close < roll_lo[1]
+
+vol_ma    = ta.sma(volume, 20)
+vol_ratio = vol_ma > 0 ? volume / vol_ma : 1.0
+vol_spike = vol_ratio >= vol_mult
+
+// Breakout score
+brk_score = brk_up ? 0.80 : brk_dn ? -0.80 : 0.0
+// Volume multiplies conviction
+vol_score = vol_spike ? (brk_up ? 0.40 : brk_dn ? -0.40 : 0.15) :
+            vol_ratio >= 1.3 ? 0.10 : 0.0
+
+// Return momentum (1d / 5d / 20d)
+ret_1  = (close - close[1])  / close[1]
+ret_5  = (close - close[5])  / close[5]
+ret_20 = (close - close[20]) / close[20]
+mom_raw   = ret_1 * 0.20 + ret_5 * 0.35 + ret_20 * 0.45
+mom_score = math.max(-1.0, math.min(1.0, mom_raw * 15.0))  // tanh approximation
+
+mom_total = brk_score * 0.45 + vol_score * 0.30 + mom_score * 0.25
+mom_total := math.max(-1.0, math.min(1.0, mom_total))
+
+// ─── AGENT 3: MEAN REVERSION (RSI + Bollinger) — weight 0.20 ────────────────
+rsi_val = ta.rsi(close, rsi_len)
+
+// RSI score
+rsi_score = rsi_val < 25  ? 1.00 :
+            rsi_val < 30  ? 0.70 :
+            rsi_val < 40  ? 0.25 :
+            rsi_val > 75  ? -1.00 :
+            rsi_val > 70  ? -0.70 :
+            rsi_val > 60  ? -0.25 : 0.0
+
+// Bollinger Bands
+bb_basis = ta.sma(close, bb_len)
+bb_dev   = ta.stdev(close, bb_len)
+bb_upper = bb_basis + bb_mult * bb_dev
+bb_lower = bb_basis - bb_mult * bb_dev
+bb_pct   = (bb_upper - bb_lower) != 0 ? (close - bb_lower) / (bb_upper - bb_lower) : 0.5
+
+bb_score = bb_pct < 0.0  ? 1.00 :
+           bb_pct < 0.20 ? 0.60 :
+           bb_pct > 1.0  ? -1.00 :
+           bb_pct > 0.80 ? -0.60 : 0.0
+
+rev_score = rsi_score * 0.55 + bb_score * 0.45
+rev_score := math.max(-1.0, math.min(1.0, rev_score))
+
+// ─── AGENT 4: VOLATILITY REGIME (ATR-based) — weight 0.20 ───────────────────
+atr_val  = ta.atr(atr_len)
+atr_ma   = ta.sma(atr_val, 50)
+atr_ratio = atr_ma > 0 ? atr_val / atr_ma : 1.0
+
+// Low volatility = trending → boost trend signal
+// High volatility = choppy  → boost reversion signal
+regime_score = atr_ratio < 0.8  ? trend_score * 0.8 :   // quiet: follow trend
+               atr_ratio > 1.5  ? rev_score   * 0.8 :   // volatile: mean revert
+               (trend_score + rev_score) / 2.0           // normal: balanced
+
+regime_score := math.max(-1.0, math.min(1.0, regime_score))
+
+// ─── COMPOSITE SCORE (weighted sum) ──────────────────────────────────────────
+composite = trend_score * 0.30 +
+            mom_total   * 0.30 +
+            rev_score   * 0.20 +
+            regime_score* 0.20
+
+composite := math.max(-1.0, math.min(1.0, composite))
+
+// Map to 0–100% confidence
+confidence = (math.abs(composite)) * 100.0
+
+// ─── SIGNAL DECISION ─────────────────────────────────────────────────────────
+go_long  = composite >=  buy_thresh  and strategy.position_size == 0
+go_short = composite <= -sell_thresh and strategy.position_size == 0
+exit_long  = composite <= -0.10 and strategy.position_size > 0
+exit_short = composite >=  0.10 and strategy.position_size < 0
+
+// ─── ATR-BASED SL / TP ───────────────────────────────────────────────────────
+sl_dist = atr_val * sl_atr_mult
+tp_dist = sl_dist * rr_ratio
+
+sl_long  = close - sl_dist
+tp_long  = close + tp_dist
+sl_short = close + sl_dist
+tp_short = close - tp_dist
+
+// ─── STRATEGY ORDERS ─────────────────────────────────────────────────────────
+if go_long
+    strategy.entry("Long",  strategy.long)
+    strategy.exit("Long X", from_entry="Long",  stop=sl_long,  limit=tp_long)
+
+if go_short
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short X",from_entry="Short", stop=sl_short, limit=tp_short)
+
+if exit_long
+    strategy.close("Long",  comment="Signal flip")
+
+if exit_short
+    strategy.close("Short", comment="Signal flip")
+
+// ─── REASON STRING ───────────────────────────────────────────────────────────
+// Build concise explanation for label
+reason(dir) =>
+    parts = ""
+    parts := ema_cross  and dir == 1 ? "Golden Cross " : ema_dcross and dir == -1 ? "Death Cross " : ""
+    parts := parts + (macd_just_bull and dir == 1 ? "+ MACD X " : macd_just_bear and dir == -1 ? "+ MACD X " : "")
+    parts := parts + (brk_up and dir == 1 ? "+ Breakout " : brk_dn and dir == -1 ? "+ Breakdown " : "")
+    parts := parts + (vol_spike ? "+ Vol spike " : "")
+    parts := parts + (rsi_val < 30 ? "+ RSI oversold " : rsi_val > 70 ? "+ RSI overbought " : "")
+    parts := parts + (bb_pct < 0.15 ? "+ at BB low" : bb_pct > 0.85 ? "+ at BB high" : "")
+    str.length(parts) > 0 ? parts : (dir == 1 ? "Multi-agent BUY" : "Multi-agent SELL")
+
+// ─── SIGNAL LABELS ON CHART ──────────────────────────────────────────────────
+if show_labels and go_long
+    _lbl = label.new(
+      bar_index, low - sl_dist * 0.3,
+      text  = "▲ BUY\nScore: " + str.tostring(composite, "#.##") +
+              "\nConf: " + str.tostring(confidence, "#.0") + "%" +
+              "\n" + reason(1),
+      style = label.style_label_up,
+      color = col_buy,
+      textcolor = color.black,
+      size  = size.small
+    )
+
+if show_labels and go_short
+    _lbl = label.new(
+      bar_index, high + sl_dist * 0.3,
+      text  = "▼ SELL\nScore: " + str.tostring(composite, "#.##") +
+              "\nConf: " + str.tostring(confidence, "#.0") + "%" +
+              "\n" + reason(-1),
+      style = label.style_label_down,
+      color = col_sell,
+      textcolor = color.white,
+      size  = size.small
+    )
+
+// ─── SL / TP LINES ON OPEN TRADE ─────────────────────────────────────────────
+var line sl_line = na
+var line tp_line = na
+
+if show_sl_tp
+    if go_long
+        sl_line := line.new(bar_index, sl_long,  bar_index+50, sl_long,
+                            color=col_sl, width=1, style=line.style_dashed, extend=extend.right)
+        tp_line := line.new(bar_index, tp_long,  bar_index+50, tp_long,
+                            color=col_tp, width=1, style=line.style_dashed, extend=extend.right)
+    if go_short
+        sl_line := line.new(bar_index, sl_short, bar_index+50, sl_short,
+                            color=col_sl, width=1, style=line.style_dashed, extend=extend.right)
+        tp_line := line.new(bar_index, tp_short, bar_index+50, tp_short,
+                            color=col_tp, width=1, style=line.style_dashed, extend=extend.right)
+    // Delete lines when trade closes
+    if strategy.position_size == 0 and strategy.position_size[1] != 0
+        line.delete(sl_line)
+        line.delete(tp_line)
+
+// ─── SUPPORT / RESISTANCE ZONES ───────────────────────────────────────────────
+ph = ta.pivothigh(high, 10, 10)
+pl = ta.pivotlow(low, 10, 10)
+
+if show_sr and not na(ph)
+    line.new(bar_index[10], ph, bar_index+30, ph,
+             color=col_sr_r, width=1, style=line.style_dotted, extend=extend.none)
+    label.new(bar_index[10], ph, "R " + str.tostring(ph, format.mintick),
+              style=label.style_label_right, color=color.new(#EF5350,80),
+              textcolor=#EF5350, size=size.tiny)
+
+if show_sr and not na(pl)
+    line.new(bar_index[10], pl, bar_index+30, pl,
+             color=col_sr_s, width=1, style=line.style_dotted, extend=extend.none)
+    label.new(bar_index[10], pl, "S " + str.tostring(pl, format.mintick),
+              style=label.style_label_right, color=color.new(#26A69A,80),
+              textcolor=#26A69A, size=size.tiny)
+
+// ─── INDICATOR OVERLAYS ───────────────────────────────────────────────────────
+plot(show_emas ? ema_f : na, "EMA 50",  color=col_ema_fast, linewidth=1)
+plot(show_emas ? ema_s : na, "EMA 200", color=col_ema_slow,  linewidth=2)
+plot(show_bb   ? bb_upper : na, "BB Upper", color=col_bb, linewidth=1)
+plot(show_bb   ? bb_basis : na, "BB Mid",   color=color.new(#9B59B6,40), linewidth=1, style=plot.style_line)
+plot(show_bb   ? bb_lower : na, "BB Lower", color=col_bb, linewidth=1)
+fill(plot(show_bb ? bb_upper : na, display=display.none),
+     plot(show_bb ? bb_lower : na, display=display.none),
+     color=color.new(#9B59B6, 92), title="BB Fill")
+
+// Entry / exit shapes
+plotshape(go_long,   title="BUY",  style=shape.triangleup,   location=location.belowbar,
+          color=col_buy,  size=size.normal, text="")
+plotshape(go_short,  title="SELL", style=shape.triangledown, location=location.abovebar,
+          color=col_sell, size=size.normal, text="")
+
+// ─── COMPOSITE SCORE SUBPLOT ──────────────────────────────────────────────────
+score_col = composite >=  buy_thresh  ? color.new(#00E676, 10) :
+            composite <= -sell_thresh ? color.new(#FF5252, 10) :
+            composite > 0             ? color.new(#00E676, 60) :
+            composite < 0             ? color.new(#FF5252, 60) :
+            color.new(#787B86, 40)
+
+plot(composite,       "Composite Score", color=score_col,         linewidth=2,
+     style=plot.style_histogram, display=display.pane)
+plot(trend_score,     "Trend",           color=color.new(#F7931A,30), linewidth=1, display=display.pane)
+plot(mom_total,       "Momentum",        color=color.new(#2196F3,30), linewidth=1, display=display.pane)
+plot(rev_score,       "Mean Rev",        color=color.new(#9B59B6,30), linewidth=1, display=display.pane)
+hline( buy_thresh,  "Buy Line",  color=color.new(#00E676,40), linestyle=hline.style_dashed)
+hline(-sell_thresh, "Sell Line", color=color.new(#FF5252,40), linestyle=hline.style_dashed)
+hline(0,            "Zero",      color=color.new(#787B86,60), linestyle=hline.style_solid)
+
+// ─── INFO TABLE ───────────────────────────────────────────────────────────────
+var table t = table.new(position.top_right, 2, 7,
+  border_color=color.new(#2A2E39,0), border_width=1,
+  frame_color=color.new(#2A2E39,0))
+
+if barstate.islast
+    sig_str = composite >=  buy_thresh  ? "▲ BUY"  :
+              composite <= -sell_thresh ? "▼ SELL" : "◆ HOLD"
+    sig_col = composite >=  buy_thresh  ? col_buy  :
+              composite <= -sell_thresh ? col_sell : color.new(#FFC107,0)
+
+    table.cell(t,0,0,"TRADING BOT PRO",       text_color=#D1D4DC, bgcolor=#1E222D, text_size=size.small)
+    table.cell(t,1,0,sig_str,                  text_color=sig_col, bgcolor=#1E222D, text_size=size.small)
+    table.cell(t,0,1,"Confidence",             text_color=#787B86, bgcolor=#131722, text_size=size.tiny)
+    table.cell(t,1,1,str.tostring(confidence,"#.0")+"%", text_color=sig_col, bgcolor=#131722, text_size=size.tiny)
+    table.cell(t,0,2,"Composite",              text_color=#787B86, bgcolor=#131722, text_size=size.tiny)
+    table.cell(t,1,2,str.tostring(composite,"#.###"), text_color=sig_col, bgcolor=#131722, text_size=size.tiny)
+    table.cell(t,0,3,"Trend",                  text_color=#787B86, bgcolor=#131722, text_size=size.tiny)
+    table.cell(t,1,3,str.tostring(trend_score,"#.###"),
+              text_color=trend_score>0?#26A69A:#EF5350, bgcolor=#131722, text_size=size.tiny)
+    table.cell(t,0,4,"Momentum",               text_color=#787B86, bgcolor=#131722, text_size=size.tiny)
+    table.cell(t,1,4,str.tostring(mom_total,"#.###"),
+              text_color=mom_total>0?#26A69A:#EF5350,   bgcolor=#131722, text_size=size.tiny)
+    table.cell(t,0,5,"Mean Rev",               text_color=#787B86, bgcolor=#131722, text_size=size.tiny)
+    table.cell(t,1,5,str.tostring(rev_score,"#.###"),
+              text_color=rev_score>0?#26A69A:#EF5350,   bgcolor=#131722, text_size=size.tiny)
+    table.cell(t,0,6,"ATR Regime",             text_color=#787B86, bgcolor=#131722, text_size=size.tiny)
+    table.cell(t,1,6,atr_ratio>1.5?"HIGH VOL":atr_ratio<0.8?"LOW VOL":"NORMAL",
+              text_color=atr_ratio>1.5?#FF5252:atr_ratio<0.8?#FFC107:#26A69A, bgcolor=#131722, text_size=size.tiny)

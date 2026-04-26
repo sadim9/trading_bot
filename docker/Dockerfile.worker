@@ -1,0 +1,21 @@
+# Bot Worker (background signal generation process)
+FROM python:3.11-slim
+
+RUN groupadd -r trading && useradd -r -g trading -d /app trading
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt requirements-server.txt ./
+RUN pip install --no-cache-dir --upgrade pip \
+ && pip install --no-cache-dir -r requirements.txt \
+ && pip install --no-cache-dir -r requirements-server.txt
+
+COPY --chown=trading:trading . .
+
+USER trading
+
+CMD ["python", "-m", "server.worker.bot_worker"]
