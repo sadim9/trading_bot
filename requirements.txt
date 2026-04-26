@@ -13,7 +13,7 @@ streamlit>=1.35.0
 
 # ── Optional: plotting (used by Streamlit charts) ─────────────────
 # matplotlib>=3.7.0
-# plotly>=5.18.0
+plotly>=5.18.0
 
 # ── Dev / Testing ─────────────────────────────────────────────────
 # pytest>=7.4.0
