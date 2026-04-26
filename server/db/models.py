@@ -164,7 +164,7 @@ class Trade(Base):
     metadata_: Mapped[Optional[dict]] = mapped_column("metadata", JSON, nullable=True)
 
     # Timestamps
-    opened_at: Mapped[datetime]           = mapped_column(DateTime(timezone=True), default=_now, nullable=False, index=True)
+    opened_at: Mapped[datetime]           = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime]          = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now, nullable=False)
 
@@ -331,7 +331,7 @@ class AuditLog(Base):
     ip_address: Mapped[Optional[str]]  = mapped_column(String(45), nullable=True)
     user_agent: Mapped[Optional[str]]  = mapped_column(String(255), nullable=True)
     status: Mapped[str]                = mapped_column(String(20), default="success", nullable=False)  # success | failure
-    created_at: Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_now, nullable=False, index=True)
+    created_at: Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
 
     user: Mapped[Optional[User]] = relationship("User", back_populates="audit_logs")
 
