@@ -11,9 +11,14 @@ scikit-learn>=1.3.0
 # ── Dashboard ─────────────────────────────────────────────────────
 streamlit>=1.35.0
 
-# ── Optional: plotting (used by Streamlit charts) ─────────────────
-# matplotlib>=3.7.0
+# ── Plotting (Streamlit charts + trade journal) ───────────────────
 plotly>=5.18.0
+
+# ── HTTP (alerts, BitOasis broker, API client) ────────────────────
+requests>=2.31.0
+
+# ── Discord (trade confirmation bot with interactive buttons) ─────
+discord.py>=2.3.0
 
 # ── Dev / Testing ─────────────────────────────────────────────────
 # pytest>=7.4.0

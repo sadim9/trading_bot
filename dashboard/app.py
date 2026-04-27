@@ -456,6 +456,7 @@ from dashboard.account_panel import render_account_panel
 from dashboard.watchlist import render_watchlist
 from dashboard.crypto_panel import render_crypto_selector, render_24h_ticker, render_quick_switch
 from dashboard.commodity_panel import render_commodity_quickpick
+from dashboard.trade_journal import render_trade_journal
 from data.crypto_feeds import POPULAR_CRYPTO, clear_cache
 from data.ingestion import clear_ingestion_cache
 from data.commodity_feeds import COMMODITY_SYMBOLS, COMMODITY_YFINANCE_MAP, clear_commodity_cache
@@ -635,7 +636,7 @@ with st.container():
     st.markdown('<div style="padding:8px 16px;background:var(--bg-surface);border-bottom:1px solid var(--border)">', unsafe_allow_html=True)
     t1,t2,t3,t4,t5,t6,t7,t8,t9 = st.columns([2.2,1,1,1.1,1.3,0.75,0.75,0.75,0.75])
 
-    sym  = t1.text_input("", value=st.session_state.symbol, placeholder="Symbol", label_visibility="collapsed")
+    sym  = t1.text_input("", value=st.session_state.symbol, placeholder="Symbol", label_visibility="collapsed", key="sym_toolbar")
     if st.session_state.source in ("kraken","kucoin","binance","bitoasis"):
         ivl_opts = ["1m","5m","15m","30m","1h","4h","1d","1wk"]
     elif st.session_state.source == "yfinance":
@@ -692,7 +693,8 @@ if _show_commodity_bar:
         api_key=_td_key_for_panel,
     )
     if _cqp_clicked:
-        st.session_state["symbol"] = _cqp_clicked
+        st.session_state["symbol"]      = _cqp_clicked
+        st.session_state["sym_toolbar"] = _cqp_clicked  # sync toolbar widget
         st.session_state["source"] = src
         st.session_state["df"]     = None
         st.rerun()
@@ -979,75 +981,163 @@ with chart_col:
                 ))
 
     with tab_bt:
-        bl, br = st.columns([3,1])
+        # ── Backtest controls ────────────────────────────────────────────
+        bl, br = st.columns([3, 1])
         with br:
-            bt_cap  = st.number_input("Capital ($)", 10000, 10_000_000, 100_000, 10000)
-            bt_sl   = st.slider("SL %",  0.5, 10.0, 2.0, 0.5)
-            bt_tp   = st.slider("TP %",  1.0, 20.0, 4.0, 0.5)
-            run_bt  = st.button("▶ RUN", type="primary", use_container_width=True)
+            bt_cap     = st.number_input("Capital ($)", 10000, 10_000_000, 100_000, 10000, key="bt_cap")
+            bt_sl      = st.slider("SL %",  0.5, 10.0, 2.0, 0.5, key="bt_sl")
+            bt_tp      = st.slider("TP %",  1.0, 20.0, 4.0, 0.5, key="bt_tp")
+            # Warmup: auto-scale to dataset size — max 20% of available bars, min 30
+            _max_warm  = max(30, min(100, len(df) // 5))
+            bt_warmup  = st.slider("Warmup bars", 20, _max_warm, min(50, _max_warm), 5,
+                                   key="bt_warmup",
+                                   help="Bars consumed for indicator initialisation before trading starts. "
+                                        "Lower = more trades; higher = cleaner signal warmup.")
+            run_bt     = st.button("▶ RUN BACKTEST", type="primary", use_container_width=True, key="bt_run")
+
         with bl:
             if run_bt:
                 CONFIG.backtest.initial_capital = float(bt_cap)
                 CONFIG.risk.stop_loss_pct       = bt_sl / 100
                 CONFIG.risk.take_profit_pct     = bt_tp / 100
-                with st.spinner("Running backtest..."):
-                    bt_eng = BacktestEngine(CONFIG)
-                    eq, tdf, mets = bt_eng.run(df, sym, verbose=False)
-                st.session_state.update(dict(backtest_run=True, backtest_equity=eq, backtest_trades=tdf, backtest_metrics=mets))
-                if tdf is not None and not tdf.empty:
-                    st.session_state.historical_signals = [
-                        dict(date=r.entry_date, signal="BUY" if r.direction=="long" else "SELL", price=r.entry_price)
-                        for _,r in tdf.iterrows()
-                    ]
+                _n_bars = len(df)
+                if _n_bars < bt_warmup + 5:
+                    st.error(
+                        f"Not enough data: {_n_bars} bars loaded but warmup={bt_warmup}. "
+                        "Load more data (increase period or use 1d interval) then retry."
+                    )
+                else:
+                    with st.spinner(f"Backtesting {sym} over {_n_bars} bars…"):
+                        try:
+                            bt_eng = BacktestEngine(CONFIG)
+                            eq, tdf, mets = bt_eng.run(df, sym, warmup_bars=bt_warmup, verbose=False)
+                            st.session_state.update(dict(
+                                backtest_run=True,
+                                backtest_equity=eq,
+                                backtest_trades=tdf,
+                                backtest_metrics=mets,
+                                backtest_symbol=sym,
+                                backtest_capital=float(bt_cap),
+                            ))
+                            if tdf is not None and not tdf.empty:
+                                st.session_state.historical_signals = [
+                                    dict(date=r.entry_date,
+                                         signal="BUY" if r.direction == "long" else "SELL",
+                                         price=r.entry_price)
+                                    for _, r in tdf.iterrows()
+                                ]
+                        except Exception as _bt_err:
+                            st.error(f"Backtest error: {_bt_err}")
 
             if st.session_state.backtest_run and st.session_state.backtest_equity is not None:
-                eq = st.session_state.backtest_equity
-                mets = st.session_state.backtest_metrics
-                tdf  = st.session_state.backtest_trades
-                bh   = bt_cap * (df["Close"]/df["Close"].iloc[0]).reindex(eq.index)
+                eq    = st.session_state.backtest_equity
+                mets  = st.session_state.backtest_metrics
+                tdf   = st.session_state.backtest_trades
+                _bcap = st.session_state.get("backtest_capital", bt_cap)
 
+                # ── Equity curve vs Buy-and-Hold ──────────────────────
+                _bh = _bcap * (df["Close"] / df["Close"].iloc[0]).reindex(eq.index)
                 if go:
                     fig_eq = go.Figure()
-                    fig_eq.add_trace(go.Scatter(x=eq.index,y=eq.values,name="Strategy",line=dict(color="#4B9FFF",width=2),fill="tozeroy",fillcolor="rgba(75,159,255,0.05)"))
-                    fig_eq.add_trace(go.Scatter(x=bh.index,y=bh.values,name="Buy & Hold",line=dict(color="#3A4A62",width=1.5,dash="dot")))
-                    fig_eq.update_layout(paper_bgcolor="#0C1322",plot_bgcolor="#0C1322",font=dict(color="#DCE4F5",family="IBM Plex Mono"),margin=dict(l=40,r=20,t=20,b=20),height=260,legend=dict(orientation="h"),hovermode="x unified",xaxis=dict(gridcolor="#1A2540"),yaxis=dict(gridcolor="#1A2540",side="right"))
-                    st.plotly_chart(fig_eq, use_container_width=True)
+                    fig_eq.add_trace(go.Scatter(
+                        x=eq.index, y=eq.values, name="Strategy",
+                        line=dict(color="#4B9FFF", width=2),
+                        fill="tozeroy", fillcolor="rgba(75,159,255,0.05)",
+                    ))
+                    fig_eq.add_trace(go.Scatter(
+                        x=_bh.index, y=_bh.values, name="Buy & Hold",
+                        line=dict(color="#3A4A62", width=1.5, dash="dot"),
+                    ))
+                    fig_eq.update_layout(
+                        paper_bgcolor="#0C1322", plot_bgcolor="#0C1322",
+                        font=dict(color="#DCE4F5", family="IBM Plex Mono"),
+                        margin=dict(l=40, r=20, t=20, b=20),
+                        height=260,
+                        legend=dict(orientation="h"),
+                        hovermode="x unified",
+                        xaxis=dict(gridcolor="#1A2540"),
+                        yaxis=dict(gridcolor="#1A2540", side="right"),
+                    )
+                    st.plotly_chart(fig_eq, use_container_width=True,
+                                    config={"displayModeBar": False})
 
-                # Metrics
-                m = mets
-                mc1,mc2,mc3,mc4 = st.columns(4)
-                mc1.metric("TOTAL RETURN", f"{m.get('total_return_pct',0):.2f}%")
-                mc2.metric("SHARPE",        f"{m.get('sharpe_ratio',0):.3f}")
-                mc3.metric("MAX DD",        f"{m.get('max_drawdown_pct',0):.2f}%")
-                mc4.metric("WIN RATE",      f"{m.get('win_rate_pct',0):.1f}%")
-                mc5,mc6,mc7,mc8 = st.columns(4)
-                mc5.metric("CAGR",          f"{m.get('cagr_pct',0):.2f}%")
-                mc6.metric("PROFIT FACTOR", f"{m.get('profit_factor',0):.3f}")
-                mc7.metric("TRADES",        f"{m.get('total_trades',0)}")
-                mc8.metric("SORTINO",       f"{m.get('sortino_ratio',0):.3f}")
+                # ── KPI metrics ───────────────────────────────────────
+                m = mets or {}
+                mc1, mc2, mc3, mc4 = st.columns(4)
+                mc1.metric("TOTAL RETURN",  f"{m.get('total_return_pct', 0):.2f}%")
+                mc2.metric("SHARPE",         f"{m.get('sharpe_ratio', 0):.3f}")
+                mc3.metric("MAX DRAWDOWN",   f"{m.get('max_drawdown_pct', 0):.2f}%")
+                mc4.metric("WIN RATE",       f"{m.get('win_rate_pct', 0):.1f}%")
+                mc5, mc6, mc7, mc8 = st.columns(4)
+                mc5.metric("CAGR",           f"{m.get('cagr_pct', 0):.2f}%")
+                mc6.metric("PROFIT FACTOR",  f"{m.get('profit_factor', 0):.3f}")
+                mc7.metric("TOTAL TRADES",   f"{m.get('total_trades', 0)}")
+                mc8.metric("SORTINO",        f"{m.get('sortino_ratio', 0):.3f}")
 
-                if tdf is not None and not tdf.empty and go:
-                    pnl = (tdf["pnl_pct"]*100).tolist()
-                    fc  = ["#00C9A7" if v>=0 else "#FF4560" for v in pnl]
-                    fp  = go.Figure(go.Bar(x=list(range(1,len(pnl)+1)),y=pnl,marker_color=fc))
-                    fp.update_layout(paper_bgcolor="#0C1322",plot_bgcolor="#0C1322",font=dict(color="#DCE4F5",family="IBM Plex Mono"),margin=dict(l=40,r=20,t=10,b=20),height=160,xaxis=dict(gridcolor="#1A2540"),yaxis=dict(gridcolor="#1A2540",side="right"))
-                    fp.add_hline(y=0,line=dict(color="#3A4A62",width=1))
-                    st.plotly_chart(fp, use_container_width=True)
+                # ── Per-trade P&L bar chart + table ──────────────────
+                if tdf is not None and not tdf.empty:
+                    if go:
+                        pnl = (tdf["pnl_pct"] * 100).tolist()
+                        fc  = ["#00C9A7" if v >= 0 else "#FF4560" for v in pnl]
+                        fp  = go.Figure(go.Bar(
+                            x=list(range(1, len(pnl) + 1)), y=pnl,
+                            marker_color=fc,
+                            hovertemplate="Trade %{x}<br>P&L: %{y:+.2f}%<extra></extra>",
+                        ))
+                        fp.update_layout(
+                            paper_bgcolor="#0C1322", plot_bgcolor="#0C1322",
+                            font=dict(color="#DCE4F5", family="IBM Plex Mono"),
+                            margin=dict(l=40, r=20, t=10, b=20),
+                            height=160,
+                            xaxis=dict(gridcolor="#1A2540"),
+                            yaxis=dict(gridcolor="#1A2540", side="right"),
+                        )
+                        fp.add_hline(y=0, line=dict(color="#3A4A62", width=1))
+                        st.plotly_chart(fp, use_container_width=True,
+                                        config={"displayModeBar": False})
+
                     disp = tdf.copy()
-                    disp["pnl_pct"] = (disp["pnl_pct"]*100).round(2)
-                    show_c = [c for c in ["direction","entry_date","entry_price","exit_date","exit_price","exit_reason","pnl_pct","pnl_dollar"] if c in disp.columns]
-                    st.dataframe(disp[show_c], use_container_width=True, hide_index=True)
+                    disp["pnl_pct"] = (disp["pnl_pct"] * 100).round(2)
+                    show_c = [c for c in [
+                        "direction", "entry_date", "entry_price",
+                        "exit_date", "exit_price", "exit_reason",
+                        "pnl_pct", "pnl_dollar",
+                    ] if c in disp.columns]
+                    try:
+                        st.dataframe(disp[show_c], use_container_width=True, hide_index=True)
+                    except Exception:
+                        st.table(disp[show_c].head(50))
+                else:
+                    st.info(
+                        "No trades generated. Try reducing the Warmup bars, "
+                        "increasing the data period, or lowering the signal threshold."
+                    )
             else:
-                st.markdown('<div style="color:var(--text-mute);font-size:11px;padding:20px;font-family:var(--mono)">Configure and click ▶ RUN to run backtest</div>', unsafe_allow_html=True)
+                st.markdown(
+                    '<div style="color:var(--text-mute);font-size:11px;padding:20px;'
+                    'font-family:var(--mono);text-align:center">'
+                    'Set parameters and click <b>▶ RUN BACKTEST</b></div>',
+                    unsafe_allow_html=True,
+                )
 
     with tab_log:
-        ind_cols = ["Close","ema_fast","ema_slow","rsi","macd","macd_hist","bb_pct","vol_ratio","atr"]
-        st.dataframe(df[[c for c in ind_cols if c in df.columns]].tail(30).round(4).iloc[::-1], use_container_width=True)
-        from utils.logger import TradeLogger
-        sigs_log = TradeLogger().read_signals()
-        if sigs_log:
-            st.markdown('<div class="qt-section">SIGNAL LOG</div>', unsafe_allow_html=True)
-            st.dataframe(pd.DataFrame(sigs_log).tail(20).iloc[::-1], use_container_width=True, hide_index=True)
+        # ── Trade Journal (full P&L tracking) ───────────────────────────
+        render_trade_journal()
+
+        # ── Market data snapshot (collapsible) ──────────────────────────
+        with st.expander("Current Market Data / Indicator Snapshot", expanded=False):
+            ind_cols = ["Close", "ema_fast", "ema_slow", "rsi", "macd",
+                        "macd_hist", "bb_pct", "vol_ratio", "atr"]
+            try:
+                st.dataframe(
+                    df[[c for c in ind_cols if c in df.columns]].tail(30).round(4).iloc[::-1],
+                    use_container_width=True,
+                )
+            except Exception:
+                # Fallback if DataFrame component CSS fails to load
+                st.table(
+                    df[[c for c in ind_cols if c in df.columns]].tail(15).round(4).iloc[::-1]
+                )
 
     with tab_acct:
         render_account_panel()
@@ -1069,8 +1159,9 @@ with chart_col:
             main_interval = st.session_state.get("interval", "1h"),
         )
         if _clicked:
-            st.session_state["symbol"] = _clicked
-            st.session_state["df"]     = None   # force reload
+            st.session_state["symbol"]      = _clicked
+            st.session_state["sym_toolbar"] = _clicked  # sync toolbar widget
+            st.session_state["df"]          = None   # force reload
             st.rerun()
 
 # ──────────────── RIGHT: SIGNAL PANEL ─────────────────────────────────────────
@@ -1306,7 +1397,7 @@ with panel_col:
             <b>Discord here</b> = one-way push via Webhook URL (no bot needed, instant setup).<br>
             For interactive ✅/❌ trade confirmation → configure the Discord Bot in the ⚙ ACCOUNTS tab.
             </div>''',
-            unsafe_allow_html=True
+            afe_allow_html=True
         )
         at1, at2, at3, at4 = st.tabs(["📧 EMAIL","💬 DISCORD WEBHOOK","📱 WHATSAPP","✈ TELEGRAM"])
         with at1:
@@ -1323,7 +1414,6 @@ with panel_col:
             st.caption("Server Settings → Integrations → Webhooks → New Webhook → Copy URL")
             dc_url = st.text_input("Webhook URL", key="dc_url",
                 placeholder="https://discord.com/api/webhooks/1234567890/xxxxxxxxxxxx")
-            # Show clear status of whether URL looks valid
             if dc_url and dc_url.startswith("https://discord.com/api/webhooks/"):
                 st.success("✅ Webhook URL looks valid")
             elif dc_url and dc_url != "https://discord.com/api/webhooks/...":

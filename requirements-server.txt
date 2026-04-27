@@ -23,3 +23,7 @@ slowapi>=0.1.9
 
 # ── Redis ─────────────────────────────────────────────────────
 redis>=5.0.4
+
+# ── Broker SDKs (worker + optional dashboard use) ─────────────
+# Interactive Brokers — lazy-imported, only activates when IB is configured
+ib_insync>=0.9.86

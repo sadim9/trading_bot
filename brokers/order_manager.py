@@ -5,26 +5,13 @@ Full lifecycle:
   1. Receive signal (symbol, side, qty, price levels, reason)
   2. Send Discord confirmation embed with Confirm / Cancel buttons
   3. Wait up to timeout_seconds for user response
-  4. If confirmed → place order via selected broker
+  4. If confirmed -> place order via selected broker
   5. Send Discord notification with fill details
   6. Log to trade log
 
-Supports:
-  - BitOasis (crypto, AED/USD pairs)
-  - Interactive Brokers (stocks, crypto, forex)
-  - Both in paper or live mode
-  - MA Cross crossover interval configuration
-
-Usage:
-    mgr = OrderManager(
-        broker=BitOasisBroker(api_key=..., paper_trading=True),
-        discord=DiscordConfirmBot(bot_token=..., channel_id=...),
-    )
-    mgr.handle_signal(
-        symbol="BTC-AED", side="buy", quantity=0.01,
-        entry_price=250000, stop_loss=245000, take_profit=260000,
-        reason="MA9 crossed above MA21 (Golden Cross)", kelly_pct=8.5,
-    )
+Also provides trade journal helpers:
+  - log_manual_trade()  -- record a trade placed outside the bot
+  - close_trade()       -- mark an open trade closed with P&L calculation
 """
 
 from __future__ import annotations
@@ -52,16 +39,12 @@ except ImportError:
 
 @dataclass
 class CrossoverConfig:
-    """
-    MA Cross interval settings — configurable per broker session.
-    These mirror the Pine Script shortlen / longlen inputs.
-    """
-    short_period: int   = 9        # Fast MA period
-    long_period:  int   = 21       # Slow MA period
-    interval:     str   = "1h"     # Bar interval: "5m","15m","1h","4h","1d"
-    symbol:       str   = "AAPL"   # Ticker
-    broker_name:  str   = "bitoasis"  # "bitoasis" | "ibkr"
-    enabled:      bool  = True
+    short_period: int  = 9
+    long_period:  int  = 21
+    interval:     str  = "1h"
+    symbol:       str  = "AAPL"
+    broker_name:  str  = "bitoasis"
+    enabled:      bool = True
 
     def summary(self) -> str:
         return (
@@ -73,42 +56,48 @@ class CrossoverConfig:
 
 @dataclass
 class TradeRecord:
-    timestamp:    str
-    symbol:       str
-    side:         str
-    quantity:     float
-    entry_price:  Optional[float]
-    stop_loss:    Optional[float]
-    take_profit:  Optional[float]
-    broker:       str
-    order_id:     str
-    status:       str
-    fill_price:   Optional[float]
-    kelly_pct:    float
-    reason:       str
+    timestamp:   str
+    symbol:      str
+    side:        str
+    quantity:    float
+    entry_price: Optional[float]
+    stop_loss:   Optional[float]
+    take_profit: Optional[float]
+    broker:      str
+    order_id:    str
+    status:      str
+    fill_price:  Optional[float]
+    kelly_pct:   float
+    reason:      str
     confirmed_by: str
-    error:        str = ""
+    closed_at:   str = ""
+    exit_price:  Optional[float] = None
+    pnl:         Optional[float] = None
+    pnl_pct:     Optional[float] = None
+    exit_reason: str = ""
+    error:       str = ""
 
 
 class OrderManager:
     """
     Orchestrates the full trade lifecycle:
-    Discord confirm → broker execute → Discord notify → log.
+    Discord confirm -> broker execute -> Discord notify -> log.
     """
 
     TRADE_LOG = "logs/executed_trades.csv"
     LOG_COLS  = [
-        "timestamp","symbol","side","quantity","entry_price",
-        "stop_loss","take_profit","broker","order_id","status",
-        "fill_price","kelly_pct","reason","confirmed_by","error",
+        "timestamp", "symbol", "side", "quantity", "entry_price",
+        "stop_loss", "take_profit", "broker", "order_id", "status",
+        "fill_price", "kelly_pct", "reason", "confirmed_by",
+        "closed_at", "exit_price", "pnl", "pnl_pct", "exit_reason", "error",
     ]
 
     def __init__(
         self,
-        broker:          Optional[BaseBroker]       = None,
+        broker:          Optional[BaseBroker]          = None,
         discord:         Optional["DiscordConfirmBot"] = None,
         require_confirm: bool = True,
-        confirm_timeout: int  = 120,    # seconds
+        confirm_timeout: int  = 120,
         paper_trading:   bool = True,
     ):
         self.broker          = broker
@@ -127,38 +116,22 @@ class OrderManager:
             except Exception as e:
                 log.warning(f"Broker connect failed: {e}")
 
-    # ── Main entry point ───────────────────────────────────────────────────
+    # ------------------------------------------------------------------ #
+    #  Main signal handler                                                 #
+    # ------------------------------------------------------------------ #
     def handle_signal(
         self,
-        symbol:       str,
-        side:         str,
-        quantity:     float,
-        entry_price:  Optional[float] = None,
-        stop_loss:    Optional[float] = None,
-        take_profit:  Optional[float] = None,
-        order_type:   str             = "market",
-        reason:       str             = "",
-        kelly_pct:    float           = 0.0,
+        symbol:        str,
+        side:          str,
+        quantity:      float,
+        entry_price:   Optional[float] = None,
+        stop_loss:     Optional[float] = None,
+        take_profit:   Optional[float] = None,
+        order_type:    str             = "market",
+        reason:        str             = "",
+        kelly_pct:     float           = 0.0,
         crossover_cfg: Optional[CrossoverConfig] = None,
     ) -> Optional[OrderResult]:
-        """
-        Process a trade signal end-to-end.
-
-        Args:
-            symbol:      Ticker symbol ("AAPL", "BTC-AED")
-            side:        "buy" | "sell"
-            quantity:    Units to trade
-            entry_price: Suggested entry (used for limit orders)
-            stop_loss:   SL price level
-            take_profit: TP price level
-            order_type:  "market" | "limit"
-            reason:      Human-readable signal explanation
-            kelly_pct:   Kelly-sized position as % of equity
-            crossover_cfg: MA crossover settings if this was a cross signal
-
-        Returns:
-            OrderResult on execution, None if cancelled/skipped
-        """
         if crossover_cfg:
             reason = f"[{crossover_cfg.summary()}] {reason}"
 
@@ -175,9 +148,8 @@ class OrderManager:
 
         log.info(f"Signal received: {request.summary()} | {reason}")
 
-        # ── Discord confirmation ────────────────────────────────────────
-        confirmed  = True
-        responder  = "auto"
+        confirmed = True
+        responder = "auto"
 
         if self.require_confirm and self.discord:
             try:
@@ -198,39 +170,118 @@ class OrderManager:
         elif self.require_confirm and not self.discord:
             log.warning(
                 "require_confirm=True but no Discord bot configured. "
-                "Trade skipped. Configure DiscordConfirmBot or set require_confirm=False."
+                "Trade skipped. Set require_confirm=False or connect Discord."
             )
             return None
 
-        # ── Execute ────────────────────────────────────────────────────
         result = self._execute(request, kelly_pct)
 
-        # ── Notify ────────────────────────────────────────────────────
         if self.discord:
             try:
                 self.discord.notify(result, confirmed=True, responder=responder)
             except Exception as e:
                 log.warning(f"Discord notify error: {e}")
 
-        # ── Log ────────────────────────────────────────────────────────
         self._log_trade(request, result, kelly_pct, reason, responder)
-
         return result
 
-    def get_trade_history(self) -> List[TradeRecord]:
-        """Read all logged trades from CSV."""
-        records = []
+    # ------------------------------------------------------------------ #
+    #  Trade journal helpers                                               #
+    # ------------------------------------------------------------------ #
+    def get_trade_history(self) -> List[dict]:
+        rows = []
         if not os.path.exists(self.TRADE_LOG):
-            return records
+            return rows
         with open(self.TRADE_LOG, encoding="utf-8-sig") as f:
             for row in csv.DictReader(f):
-                records.append(TradeRecord(**{k: row.get(k, "") for k in self.LOG_COLS if k != "error"}, error=row.get("error", "")))
-        return records
+                rows.append(dict(row))
+        return rows
 
-    # ── Internal ───────────────────────────────────────────────────────
+    def log_manual_trade(
+        self,
+        symbol:      str,
+        side:        str,
+        quantity:    float,
+        entry_price: float,
+        stop_loss:   Optional[float] = None,
+        take_profit: Optional[float] = None,
+        broker:      str = "manual",
+        reason:      str = "Manual entry",
+    ) -> str:
+        """Log a trade placed outside the bot for journalling. Returns order_id."""
+        order_id = f"MANUAL-{int(time.time())}"
+        row = {
+            "timestamp":    datetime.now().isoformat(),
+            "symbol":       symbol.upper(),
+            "side":         side.lower(),
+            "quantity":     quantity,
+            "entry_price":  entry_price,
+            "stop_loss":    stop_loss if stop_loss else "",
+            "take_profit":  take_profit if take_profit else "",
+            "broker":       broker,
+            "order_id":     order_id,
+            "status":       "open",
+            "fill_price":   entry_price,
+            "kelly_pct":    0.0,
+            "reason":       reason[:200],
+            "confirmed_by": "manual",
+            "closed_at":    "",
+            "exit_price":   "",
+            "pnl":          "",
+            "pnl_pct":      "",
+            "exit_reason":  "",
+            "error":        "",
+        }
+        with open(self.TRADE_LOG, "a", newline="", encoding="utf-8-sig") as f:
+            csv.DictWriter(f, fieldnames=self.LOG_COLS, extrasaction="ignore").writerow(row)
+        log.info(f"Manual trade logged: {order_id} {side.upper()} {quantity} {symbol.upper()} @ {entry_price}")
+        return order_id
+
+    def close_trade(self, order_id: str, exit_price: float, exit_reason: str = "manual") -> bool:
+        """Mark an open trade as closed, compute P&L. Returns True if found."""
+        if not os.path.exists(self.TRADE_LOG):
+            return False
+
+        rows = []
+        found = False
+        with open(self.TRADE_LOG, encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row.get("order_id") == order_id and row.get("status") == "open":
+                    try:
+                        ep  = float(row.get("fill_price") or row.get("entry_price") or 0)
+                        qty = float(row.get("quantity", 1))
+                        sd  = row.get("side", "buy").lower()
+                        if sd == "buy":
+                            pct = (exit_price - ep) / ep if ep else 0
+                        else:
+                            pct = (ep - exit_price) / ep if ep else 0
+                        dollar = pct * ep * qty
+                        row["closed_at"]   = datetime.now().isoformat()
+                        row["exit_price"]  = round(exit_price, 6)
+                        row["pnl"]         = round(dollar, 4)
+                        row["pnl_pct"]     = round(pct * 100, 4)
+                        row["exit_reason"] = exit_reason
+                        row["status"]      = "closed"
+                        found = True
+                        pct_str = f"{pct * 100:+.2f}"
+                        log.info(f"Trade closed: {order_id} | P&L: {dollar:+.4f} ({pct_str}%)")
+                    except Exception as e:
+                        log.error(f"close_trade P&L calc error: {e}")
+                rows.append(row)
+
+        if found:
+            with open(self.TRADE_LOG, "w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=self.LOG_COLS, extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(rows)
+        return found
+
+    # ------------------------------------------------------------------ #
+    #  Internal                                                            #
+    # ------------------------------------------------------------------ #
     def _execute(self, request: OrderRequest, kelly_pct: float) -> OrderResult:
-        # Input validation — symbol must not contain path separators or shell chars
-        bad_chars = {"/", "\\", ";", "|", "&", "$", "`", "<", ">", "'", chr(34), "{", "}", "[", "]"}
+        bad_chars = set('/\\;|&$`<>\'"{}[]')
         if any(c in request.symbol for c in bad_chars):
             return OrderResult(
                 success=False, broker="validation",
@@ -239,7 +290,7 @@ class OrderManager:
                 status="rejected",
             )
         if not self.broker:
-            log.warning("No broker configured — simulating fill")
+            log.warning("No broker configured -- simulating fill")
             return OrderResult(
                 success=True,
                 order_id=f"NO-BROKER-{int(time.time())}",
@@ -250,7 +301,6 @@ class OrderManager:
                 filled_price=request.limit_price,
                 status="simulated",
             )
-
         with self._lock:
             try:
                 result = self.broker.place_order(request)
@@ -291,13 +341,34 @@ class OrderManager:
         if not os.path.exists(self.TRADE_LOG):
             with open(self.TRADE_LOG, "w", newline="", encoding="utf-8-sig") as f:
                 csv.DictWriter(f, fieldnames=self.LOG_COLS).writeheader()
+        else:
+            # Migrate old CSVs missing the P&L columns
+            with open(self.TRADE_LOG, encoding="utf-8-sig") as f:
+                first_line = f.readline()
+            if "pnl" not in first_line:
+                self._migrate_csv()
+
+    def _migrate_csv(self):
+        try:
+            rows = []
+            with open(self.TRADE_LOG, encoding="utf-8-sig") as f:
+                for row in csv.DictReader(f):
+                    rows.append(row)
+            with open(self.TRADE_LOG, "w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=self.LOG_COLS, extrasaction="ignore")
+                writer.writeheader()
+                for row in rows:
+                    writer.writerow(row)
+            log.info("Migrated executed_trades.csv to include P&L columns")
+        except Exception as e:
+            log.warning(f"CSV migration failed: {e}")
 
     def _log_trade(
         self,
-        request:   OrderRequest,
-        result:    OrderResult,
-        kelly_pct: float,
-        reason:    str,
+        request:      OrderRequest,
+        result:       OrderResult,
+        kelly_pct:    float,
+        reason:       str,
         confirmed_by: str,
     ):
         row = {
@@ -315,6 +386,11 @@ class OrderManager:
             "kelly_pct":    round(kelly_pct, 2),
             "reason":       reason[:200],
             "confirmed_by": confirmed_by,
+            "closed_at":    "",
+            "exit_price":   "",
+            "pnl":          "",
+            "pnl_pct":      "",
+            "exit_reason":  "",
             "error":        result.error,
         }
         with open(self.TRADE_LOG, "a", newline="", encoding="utf-8-sig") as f:
