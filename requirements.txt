@@ -18,6 +18,9 @@ plotly>=5.18.0
 requests>=2.31.0
 
 # ── Discord (trade confirmation bot with interactive buttons) ─────
+# Pin aiohttp<3.12 — aiohttp 3.13.x wheel causes SSL_UNEXPECTED_EOF
+# on DigitalOcean during docker builds (large wheel + TLS fragmentation)
+aiohttp>=3.9.0,<3.12.0
 discord.py>=2.3.0
 
 # ── Dev / Testing ─────────────────────────────────────────────────
