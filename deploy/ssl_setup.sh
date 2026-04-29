@@ -11,9 +11,13 @@
 
 set -euo pipefail
 
-# Load domain from .env
+# Safely extract only the variables we need from .env.
+# Using grep+sed avoids the "source .env" pitfall where unquoted values
+# with spaces (e.g. APP_NAME=TradingBot API) cause bash to treat the
+# second word as a command and fail with "API: command not found".
 if [ -f .env ]; then
-    source .env
+    DOMAIN=$(grep -E '^DOMAIN=' .env | head -1 | sed 's/^DOMAIN=//' | tr -d '"'"'"' ')
+    CERTBOT_EMAIL=$(grep -E '^CERTBOT_EMAIL=' .env | head -1 | sed 's/^CERTBOT_EMAIL=//' | tr -d '"'"'"' ')
 fi
 
 [ -z "${DOMAIN:-}" ]          && { echo "Set DOMAIN in .env"; exit 1; }
@@ -32,20 +36,9 @@ docker run --rm -d --name tmp_nginx \
 
 sleep 2
 
-# Obtain certificate
+# Obtain certificate for apex domain AND www subdomain.
+# The www cert is required so that mobile browsers, which often
+# request www.theapextraders.com, don't get a TLS mismatch error.
 docker run --rm \
     -v "$(pwd)/.certbot/conf:/etc/letsencrypt" \
-    -v "$(pwd)/.certbot/www:/var/www/certbot" \
-    certbot/certbot certonly \
-    --webroot \
-    --webroot-path=/var/www/certbot \
-    --email "$CERTBOT_EMAIL" \
-    --agree-tos \
-    --no-eff-email \
-    -d "$DOMAIN"
-
-docker stop tmp_nginx 2>/dev/null || true
-
-# Create Docker named volumes and copy certs into them
-echo "[+] Certificates obtained for $DOMAIN"
-echo "[+] You can now run: docker compose up -d"
+    -v "$(pwd)/.certbot/www:/var/w

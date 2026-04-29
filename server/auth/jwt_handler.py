@@ -17,7 +17,20 @@ from typing import Optional
 from jose import JWTError, jwt
 from fastapi import HTTPException, status
 
-SECRET_KEY      = os.getenv("SECRET_KEY", secrets.token_hex(64))
+_SECRET_KEY_ENV = os.getenv("SECRET_KEY", "")
+_INSECURE_PLACEHOLDERS = {"", "CHANGE_ME_USE_SECRETS_TOKEN_HEX_64", "REPLACE_WITH_64_CHAR_HEX_STRING"}
+
+if _SECRET_KEY_ENV in _INSECURE_PLACEHOLDERS:
+    # Security: refuse to start with a missing or placeholder key.
+    # A random fallback (secrets.token_hex) would silently invalidate all
+    # tokens on every restart — much harder to diagnose than a hard failure.
+    raise RuntimeError(
+        "SECRET_KEY is not set or is still the placeholder value. "
+        "Generate one with: python -c \"import secrets; print(secrets.token_hex(64))\" "
+        "and add it to your .env file."
+    )
+
+SECRET_KEY      = _SECRET_KEY_ENV
 ALGORITHM       = "HS256"
 ACCESS_EXPIRE   = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
 REFRESH_EXPIRE  = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))

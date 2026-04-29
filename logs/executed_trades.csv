@@ -1,1 +1,1 @@
-﻿timestamp,symbol,side,quantity,entry_price,stop_loss,take_profit,broker,order_id,status,fill_price,kelly_pct,reason,confirmed_by,error
+﻿timestamp,symbol,side,quantity,entry_price,stop_loss,take_profit,broker,order_id,status,fill_price,kelly_pct,reason,confirmed_by,closed_at,exit_price,pnl,pnl_pct,exit_reason,error

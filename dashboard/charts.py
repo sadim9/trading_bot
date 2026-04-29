@@ -70,6 +70,49 @@ THEME = dict(
     mkv_entry    = "rgba(206,147,216,0.15)",# entry zone fill
 )
 
+# ── Light Mode Palette ─────────────────────────────────────────────────────────
+LIGHT_THEME = dict(
+    bg          = "#F2F6FC",      # chart background — cool off-white
+    bg_panel    = "#E8EEF8",      # panel / subplot bg
+    grid        = "#C8D4E8",      # gridlines — clearly visible but subtle
+    text        = "#0B1929",      # near-black for high contrast
+    text_dim    = "#4A6580",      # secondary labels
+    candle_up   = "#007A5E",      # bullish — darker green readable on white
+    candle_dn   = "#C0001E",      # bearish — deeper red readable on white
+    ema_fast    = "#D0620A",      # EMA 50  (burnt orange — readable)
+    ema_slow    = "#1555A2",      # EMA 200 (deep blue)
+    bb_mid      = "#6030BE",      # BB middle band (dark purple)
+    bb_fill     = "rgba(96,48,190,0.07)",
+    vol_up      = "rgba(0,122,94,0.55)",
+    vol_dn      = "rgba(192,0,30,0.55)",
+    rsi_line    = "#1555A2",
+    rsi_ob      = "rgba(192,0,30,0.10)",
+    rsi_os      = "rgba(0,122,94,0.10)",
+    macd_line   = "#1555A2",
+    macd_signal = "#C0600A",
+    macd_pos    = "rgba(0,122,94,0.70)",
+    macd_neg    = "rgba(192,0,30,0.70)",
+    buy_arrow   = "#005C44",      # deep green arrow on light bg
+    sell_arrow  = "#A00018",      # deep red arrow
+    entry_line  = "#96620A",      # amber — visible on white
+    sl_line     = "#C0001E",
+    tp_line     = "#00735C",
+    sr_support   = "rgba(0,115,92,0.40)",
+    sr_resist    = "rgba(192,0,30,0.40)",
+    # MA Cross
+    mac_short    = "#C0600A",               # Short MA  (dark orange)
+    mac_long     = "#2E7D32",               # Long MA   (forest green)
+    mac_cross    = "#1555A2",               # Cross point (deep blue)
+    mac_bull_fill= "rgba(0,115,92,0.07)",
+    mac_bear_fill= "rgba(192,0,30,0.07)",
+    mac_golden   = "#005C44",
+    mac_death    = "#A00018",
+    # Markov Chains
+    mkv_buy      = "#6030BE",               # Markov BUY  (dark purple)
+    mkv_sell     = "#C0600A",               # Markov SELL (dark orange)
+    mkv_entry    = "rgba(96,48,190,0.12)",
+)
+
 ROW_HEIGHTS = [0.52, 0.14, 0.18, 0.16]   # [candles, volume, rsi, macd]
 
 
@@ -109,6 +152,8 @@ def build_chart(
     # Markov Chains signals overlay
     markov_signals: Optional[List[dict]] = None,
     show_markov:    bool = False,
+    # Theme
+    light_mode: bool = False,
 ) -> "go.Figure":
     """
     Build the full institutional chart figure.
@@ -131,6 +176,9 @@ def build_chart(
     """
     if not PLOTLY_OK:
         raise ImportError("plotly not installed. Run: pip install plotly")
+
+    # Select the active colour palette for this render
+    T = LIGHT_THEME if light_mode else THEME
 
     df = df.tail(n_candles).copy()
 
@@ -164,10 +212,10 @@ def build_chart(
         x=df.index,
         open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
         name="Price",
-        increasing=dict(line=dict(color=THEME["candle_up"], width=1),
-                        fillcolor=THEME["candle_up"]),
-        decreasing=dict(line=dict(color=THEME["candle_dn"], width=1),
-                        fillcolor=THEME["candle_dn"]),
+        increasing=dict(line=dict(color=T["candle_up"], width=1),
+                        fillcolor=T["candle_up"]),
+        decreasing=dict(line=dict(color=T["candle_dn"], width=1),
+                        fillcolor=T["candle_dn"]),
         whiskerwidth=0.8,
     ), row=1, col=1)
 
@@ -176,7 +224,7 @@ def build_chart(
         fig.add_trace(go.Scatter(
             x=df.index, y=df["ema_fast"],
             name="EMA 50",
-            line=dict(color=THEME["ema_fast"], width=1.5),
+            line=dict(color=T["ema_fast"], width=1.5),
             hovertemplate="%{y:.4f}",
         ), row=1, col=1)
 
@@ -184,7 +232,7 @@ def build_chart(
         fig.add_trace(go.Scatter(
             x=df.index, y=df["ema_slow"],
             name="EMA 200",
-            line=dict(color=THEME["ema_slow"], width=1.8),
+            line=dict(color=T["ema_slow"], width=1.8),
             hovertemplate="%{y:.4f}",
         ), row=1, col=1)
 
@@ -208,7 +256,7 @@ def build_chart(
             name="_mac_short_fill",
             line=dict(color="rgba(0,0,0,0)", width=0),
             fill="tonexty",
-            fillcolor=THEME["mac_bull_fill"] if mac_bull_zone.iloc[-1] else THEME["mac_bear_fill"],
+            fillcolor=T["mac_bull_fill"] if mac_bull_zone.iloc[-1] else T["mac_bear_fill"],
             showlegend=False,
             hoverinfo="skip",
         ), row=1, col=1)
@@ -217,7 +265,7 @@ def build_chart(
         fig.add_trace(go.Scatter(
             x=df.index, y=mac_long,
             name=f"SMA {ma_long_period}",
-            line=dict(color=THEME["mac_long"], width=1.8),
+            line=dict(color=T["mac_long"], width=1.8),
             hovertemplate=f"SMA{ma_long_period}: %{{y:.4f}}<extra></extra>",
         ), row=1, col=1)
 
@@ -225,7 +273,7 @@ def build_chart(
         fig.add_trace(go.Scatter(
             x=df.index, y=mac_short,
             name=f"SMA {ma_short_period}",
-            line=dict(color=THEME["mac_short"], width=1.5),
+            line=dict(color=T["mac_short"], width=1.5),
             hovertemplate=f"SMA{ma_short_period}: %{{y:.4f}}<extra></extra>",
         ), row=1, col=1)
 
@@ -238,8 +286,8 @@ def build_chart(
                 y=cross_y_vals,
                 mode="markers",
                 name="MA Cross",
-                marker=dict(symbol="x", size=16, color=THEME["mac_cross"],
-                            line=dict(color=THEME["mac_cross"], width=3)),
+                marker=dict(symbol="x", size=16, color=T["mac_cross"],
+                            line=dict(color=T["mac_cross"], width=3)),
                 hovertemplate="Cross @ %{y:.4f}<extra></extra>",
             ), row=1, col=1)
 
@@ -248,12 +296,12 @@ def build_chart(
             fig.add_annotation(
                 x=idx, y=float(mac_short.loc[idx]),
                 text="G",
-                font=dict(color=THEME["mac_golden"], size=11, family="JetBrains Mono, monospace"),
+                font=dict(color=T["mac_golden"], size=11, family="JetBrains Mono, monospace"),
                 bgcolor="rgba(0,230,118,0.15)",
-                bordercolor=THEME["mac_golden"],
+                bordercolor=T["mac_golden"],
                 borderwidth=1,
                 showarrow=True,
-                arrowcolor=THEME["mac_golden"],
+                arrowcolor=T["mac_golden"],
                 arrowhead=2,
                 ay=25,
                 row=1, col=1,
@@ -262,12 +310,12 @@ def build_chart(
             fig.add_annotation(
                 x=idx, y=float(mac_short.loc[idx]),
                 text="D",
-                font=dict(color=THEME["mac_death"], size=11, family="JetBrains Mono, monospace"),
+                font=dict(color=T["mac_death"], size=11, family="JetBrains Mono, monospace"),
                 bgcolor="rgba(255,82,82,0.15)",
-                bordercolor=THEME["mac_death"],
+                bordercolor=T["mac_death"],
                 borderwidth=1,
                 showarrow=True,
-                arrowcolor=THEME["mac_death"],
+                arrowcolor=T["mac_death"],
                 arrowhead=2,
                 ay=-25,
                 row=1, col=1,
@@ -278,21 +326,21 @@ def build_chart(
         fig.add_trace(go.Scatter(
             x=df.index, y=df["bb_upper"],
             name="BB Upper",
-            line=dict(color=THEME["bb_mid"], width=1, dash="dot"),
+            line=dict(color=T["bb_mid"], width=1, dash="dot"),
             showlegend=False,
         ), row=1, col=1)
         fig.add_trace(go.Scatter(
             x=df.index, y=df["bb_lower"],
             name="BB Lower",
-            line=dict(color=THEME["bb_mid"], width=1, dash="dot"),
+            line=dict(color=T["bb_mid"], width=1, dash="dot"),
             fill="tonexty",
-            fillcolor=THEME["bb_fill"],
+            fillcolor=T["bb_fill"],
             showlegend=False,
         ), row=1, col=1)
         fig.add_trace(go.Scatter(
             x=df.index, y=df["bb_mid"],
             name="BB Mid",
-            line=dict(color=THEME["bb_mid"], width=1, dash="dash"),
+            line=dict(color=T["bb_mid"], width=1, dash="dash"),
             opacity=0.6,
         ), row=1, col=1)
 
@@ -303,31 +351,31 @@ def build_chart(
     for lvl in supports:
         fig.add_shape(type="line",
             x0=x_range[0], x1=x_range[1], y0=lvl, y1=lvl,
-            line=dict(color=THEME["sr_support"], width=1.2, dash="dot"),
+            line=dict(color=T["sr_support"], width=1.2, dash="dot"),
             row=1, col=1)
         fig.add_annotation(
             x=x_range[1], y=lvl, text=f"S {lvl:.2f}",
-            font=dict(color=THEME["candle_up"], size=10),
+            font=dict(color=T["candle_up"], size=10),
             showarrow=False, xanchor="right",
             row=1, col=1)
 
     for lvl in resistances:
         fig.add_shape(type="line",
             x0=x_range[0], x1=x_range[1], y0=lvl, y1=lvl,
-            line=dict(color=THEME["sr_resist"], width=1.2, dash="dot"),
+            line=dict(color=T["sr_resist"], width=1.2, dash="dot"),
             row=1, col=1)
         fig.add_annotation(
             x=x_range[1], y=lvl, text=f"R {lvl:.2f}",
-            font=dict(color=THEME["candle_dn"], size=10),
+            font=dict(color=T["candle_dn"], size=10),
             showarrow=False, xanchor="right",
             row=1, col=1)
 
     # ── Entry / SL / TP lines ────────────────────────────────────────────────
     if entry_price and signal_type in ("BUY", "SELL"):
         for price, color, label in [
-            (entry_price, THEME["entry_line"], f"Entry {entry_price:.4f}"),
-            (stop_loss,   THEME["sl_line"],    f"SL {stop_loss:.4f}"),
-            (take_profit, THEME["tp_line"],    f"TP {take_profit:.4f}"),
+            (entry_price, T["entry_line"], f"Entry {entry_price:.4f}"),
+            (stop_loss,   T["sl_line"],    f"SL {stop_loss:.4f}"),
+            (take_profit, T["tp_line"],    f"TP {take_profit:.4f}"),
         ]:
             if price:
                 fig.add_shape(type="line",
@@ -338,7 +386,7 @@ def build_chart(
                     x=x_range[0], y=price, text=label,
                     font=dict(color=color, size=10, family="monospace"),
                     showarrow=False, xanchor="left",
-                    bgcolor=THEME["bg_panel"],
+                    bgcolor=T["bg_panel"],
                     bordercolor=color, borderwidth=1,
                     row=1, col=1)
 
@@ -363,7 +411,7 @@ def build_chart(
                 mode="markers",
                 name="BUY Signal",
                 marker=dict(symbol="triangle-up", size=14,
-                            color=THEME["buy_arrow"],
+                            color=T["buy_arrow"],
                             line=dict(color="#00C853", width=1)),
                 hovertemplate="BUY @ %{y:.4f}<extra></extra>",
             ), row=1, col=1)
@@ -374,7 +422,7 @@ def build_chart(
                 mode="markers",
                 name="SELL Signal",
                 marker=dict(symbol="triangle-down", size=14,
-                            color=THEME["sell_arrow"],
+                            color=T["sell_arrow"],
                             line=dict(color="#D50000", width=1)),
                 hovertemplate="SELL @ %{y:.4f}<extra></extra>",
             ), row=1, col=1)
@@ -402,8 +450,8 @@ def build_chart(
                 marker=dict(
                     symbol="diamond",
                     size=13,
-                    color=THEME["mkv_buy"],
-                    line=dict(color=THEME["mkv_buy"], width=2),
+                    color=T["mkv_buy"],
+                    line=dict(color=T["mkv_buy"], width=2),
                 ),
                 hovertemplate="Markov BUY @ %{y:.4f}<extra></extra>",
             ), row=1, col=1)
@@ -416,86 +464,167 @@ def build_chart(
                 marker=dict(
                     symbol="diamond",
                     size=13,
-                    color=THEME["mkv_sell"],
-                    line=dict(color=THEME["mkv_sell"], width=2),
+                    color=T["mkv_sell"],
+                    line=dict(color=T["mkv_sell"], width=2),
                 ),
                 hovertemplate="Markov SELL @ %{y:.4f}<extra></extra>",
             ), row=1, col=1)
 
-    # ── ROW 2: Volume ─────────────────────────────────────────────────────────
-    vol_colors = [
-        THEME["vol_up"] if c >= o else THEME["vol_dn"]
-        for c, o in zip(df["Close"], df["Open"])
-    ]
+    # ── EMA Fast gradient fill (subtle area below EMA fast line) ────────────
+    if "ema_fast" in df.columns:
+        _close_last = float(df["Close"].iloc[-1])
+        _ema_last   = float(df["ema_fast"].iloc[-1])
+        _trend_up   = _close_last >= _ema_last
+        _fill_col   = "rgba(38,166,154,0.06)" if _trend_up else "rgba(239,83,80,0.06)"
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df["ema_fast"],
+            name="_ema_fill_base",
+            line=dict(color="rgba(0,0,0,0)", width=0),
+            showlegend=False, hoverinfo="skip",
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df["Close"],
+            name="_ema_fill_top",
+            line=dict(color="rgba(0,0,0,0)", width=0),
+            fill="tonexty",
+            fillcolor=_fill_col,
+            showlegend=False, hoverinfo="skip",
+        ), row=1, col=1)
+
+    # ── Last-price annotation (right-side label) ──────────────────────────────
+    _last_px = float(df["Close"].iloc[-1])
+    _prev_px = float(df["Close"].iloc[-2]) if len(df) > 1 else _last_px
+    _px_chg  = (_last_px / _prev_px - 1) * 100 if _prev_px else 0
+    _px_col  = T["candle_up"] if _px_chg >= 0 else T["candle_dn"]
+    fig.add_annotation(
+        x=df.index[-1], y=_last_px,
+        text=f" {_last_px:,.4f} ({_px_chg:+.2f}%) ",
+        font=dict(color=_px_col, size=11, family="JetBrains Mono, monospace"),
+        bgcolor=T["bg_panel"],
+        bordercolor=_px_col,
+        borderwidth=1,
+        showarrow=False,
+        xanchor="left",
+        xref="x", yref="y",
+        row=1, col=1,
+    )
+    # Horizontal dashed line at last price
+    fig.add_hline(
+        y=_last_px, row=1, col=1,
+        line=dict(color=_px_col, width=0.8, dash="dot"),
+    )
+
+    # ── ROW 2: Volume — gradient opacity based on relative vol ────────────────
+    _vol_mean = df["Volume"].mean()
+    _vol_high = [v >= _vol_mean * 1.5 for v in df["Volume"]]
+    _vol_hi_bull = "rgba(0,100,76,0.85)"   if light_mode else "rgba(38,166,154,0.85)"
+    _vol_hi_bear = "rgba(160,0,20,0.85)"   if light_mode else "rgba(239,83,80,0.85)"
+    vol_colors = []
+    for c, o, hi in zip(df["Close"], df["Open"], _vol_high):
+        if c >= o:
+            vol_colors.append(_vol_hi_bull if hi else T["vol_up"])
+        else:
+            vol_colors.append(_vol_hi_bear if hi else T["vol_dn"])
+
     fig.add_trace(go.Bar(
         x=df.index, y=df["Volume"],
         name="Volume",
-        marker_color=vol_colors,
+        marker=dict(
+            color=vol_colors,
+            line=dict(width=0),
+        ),
         showlegend=False,
+        hovertemplate="Vol: %{y:,.0f}<extra></extra>",
     ), row=2, col=1)
 
     if "vol_ma" in df.columns:
         fig.add_trace(go.Scatter(
             x=df.index, y=df["vol_ma"],
             name="Vol MA",
-            line=dict(color="#F59E0B", width=1.2),
+            line=dict(color="#F59E0B", width=1.2, dash="dot"),
             showlegend=False,
+            hovertemplate="Vol MA: %{y:,.0f}<extra></extra>",
         ), row=2, col=1)
 
-    # ── ROW 3: RSI ────────────────────────────────────────────────────────────
+    # ── ROW 3: RSI with gradient fill ─────────────────────────────────────────
     if "rsi" in df.columns:
-        # Overbought shading
+        # Shaded zones
         fig.add_hrect(y0=70, y1=100, row=3, col=1,
-                      fillcolor=THEME["rsi_ob"], line_width=0)
-        # Oversold shading
-        fig.add_hrect(y0=0, y1=30, row=3, col=1,
-                      fillcolor=THEME["rsi_os"], line_width=0)
-        # RSI line
+                      fillcolor=T["rsi_ob"], line_width=0)
+        fig.add_hrect(y0=0,  y1=30,  row=3, col=1,
+                      fillcolor=T["rsi_os"], line_width=0)
+        # RSI area fill
         fig.add_trace(go.Scatter(
-            x=df.index, y=df["rsi"],
+            x=df.index, y=[50] * len(df),
+            name="_rsi_base", showlegend=False, hoverinfo="skip",
+            line=dict(color="rgba(0,0,0,0)", width=0),
+        ), row=3, col=1)
+        rsi_vals = df["rsi"].fillna(50)
+        rsi_fill_colors = [
+            "rgba(38,166,154,0.15)" if v >= 50 else "rgba(239,83,80,0.15)"
+            for v in rsi_vals
+        ]
+        fig.add_trace(go.Scatter(
+            x=df.index, y=rsi_vals,
             name="RSI",
-            line=dict(color=THEME["rsi_line"], width=1.5),
+            line=dict(color=T["rsi_line"], width=1.8),
+            fill="tonexty",
+            fillcolor="rgba(96,165,250,0.08)",
             hovertemplate="RSI: %{y:.1f}<extra></extra>",
         ), row=3, col=1)
-        # Level lines
-        for lvl, color in [(70, THEME["candle_dn"]), (30, THEME["candle_up"]), (50, THEME["text_dim"])]:
+        # Level lines at 70 / 50 / 30
+        for lvl, col in [(70, T["candle_dn"]), (50, T["text_dim"]), (30, T["candle_up"])]:
             fig.add_hline(y=lvl, row=3, col=1,
-                          line=dict(color=color, width=0.8, dash="dot"))
+                          line=dict(color=col, width=0.8, dash="dot"))
 
-    # ── ROW 4: MACD ───────────────────────────────────────────────────────────
+    # ── ROW 4: MACD with divergence colouring ────────────────────────────────
     if all(c in df.columns for c in ["macd", "macd_signal", "macd_hist"]):
-        hist_colors = [
-            THEME["macd_pos"] if v >= 0 else THEME["macd_neg"]
-            for v in df["macd_hist"]
-        ]
+        hist   = df["macd_hist"]
+        # Colour: brightening green/red when momentum is increasing
+        hist_colors = []
+        for i, v in enumerate(hist):
+            prev = hist.iloc[i-1] if i > 0 else v
+            if v >= 0:
+                hist_colors.append("rgba(38,166,154,0.9)" if v >= prev else "rgba(38,166,154,0.5)")
+            else:
+                hist_colors.append("rgba(239,83,80,0.9)" if v <= prev else "rgba(239,83,80,0.5)")
+
         fig.add_trace(go.Bar(
-            x=df.index, y=df["macd_hist"],
+            x=df.index, y=hist,
             name="MACD Hist",
-            marker_color=hist_colors,
+            marker=dict(color=hist_colors, line=dict(width=0)),
             showlegend=False,
+            hovertemplate="Hist: %{y:.5f}<extra></extra>",
         ), row=4, col=1)
         fig.add_trace(go.Scatter(
             x=df.index, y=df["macd"],
             name="MACD",
-            line=dict(color=THEME["macd_line"], width=1.5),
+            line=dict(color=T["macd_line"], width=1.6),
+            hovertemplate="MACD: %{y:.5f}<extra></extra>",
         ), row=4, col=1)
         fig.add_trace(go.Scatter(
             x=df.index, y=df["macd_signal"],
             name="Signal",
-            line=dict(color=THEME["macd_signal"], width=1.2),
+            line=dict(color=T["macd_signal"], width=1.2),
+            hovertemplate="Signal: %{y:.5f}<extra></extra>",
         ), row=4, col=1)
         fig.add_hline(y=0, row=4, col=1,
-                      line=dict(color=THEME["text_dim"], width=0.8))
+                      line=dict(color=T["text_dim"], width=0.8))
 
     # ── Global dark styling ───────────────────────────────────────────────────
+    _chg_sign  = "+" if _px_chg >= 0 else ""
     fig.update_layout(
         template="plotly_dark",
-        paper_bgcolor=THEME["bg"],
-        plot_bgcolor =THEME["bg"],
-        font=dict(family="JetBrains Mono, monospace", color=THEME["text"], size=11),
+        paper_bgcolor=T["bg"],
+        plot_bgcolor =T["bg"],
+        font=dict(family="JetBrains Mono, monospace", color=T["text"], size=11),
         title=dict(
-            text=f"<b>{symbol}</b>",
-            font=dict(size=18, color=THEME["text"]),
+            text=(
+                f"<b>{symbol}</b>  "
+                f"<span style='font-size:14px;color:{_px_col}'>"
+                f"{_last_px:,.4f}  {_chg_sign}{_px_chg:.2f}%</span>"
+            ),
+            font=dict(size=16, color=T["text"]),
             x=0.01,
         ),
         legend=dict(
@@ -503,12 +632,13 @@ def build_chart(
             bgcolor="rgba(0,0,0,0)",
             font=dict(size=10),
         ),
-        margin=dict(l=60, r=20, t=50, b=20),
+        margin=dict(l=60, r=80, t=48, b=20),
         hovermode="x unified",
         hoverlabel=dict(
-            bgcolor=THEME["bg_panel"],
-            bordercolor=THEME["grid"],
-            font=dict(color=THEME["text"]),
+            bgcolor=T["bg_panel"],
+            bordercolor=T["grid"],
+            font=dict(color=T["text"], family="JetBrains Mono, monospace"),
+            namelength=20,
         ),
         dragmode="pan",
         xaxis_rangeslider_visible=False,
@@ -517,16 +647,21 @@ def build_chart(
         # Only reset when the symbol changes.
         uirevision=f"chart_{symbol}",
         transition=dict(duration=200, easing="cubic-in-out"),
+        # Spike lines for crosshair effect
+        xaxis=dict(showspikes=True, spikemode="across", spikesnap="cursor",
+                   spikecolor=T["text_dim"], spikethickness=1, spikedash="dot"),
+        yaxis=dict(showspikes=True, spikemode="toaxis", spikesnap="cursor",
+                   spikecolor=T["text_dim"], spikethickness=1, spikedash="dot"),
     )
 
     # Grid styling for all axes
     axis_style = dict(
-        gridcolor=THEME["grid"],
+        gridcolor=T["grid"],
         gridwidth=0.5,
-        zerolinecolor=THEME["grid"],
+        zerolinecolor=T["grid"],
         showgrid=True,
-        tickfont=dict(size=10, color=THEME["text_dim"]),
-        linecolor=THEME["grid"],
+        tickfont=dict(size=10, color=T["text_dim"]),
+        linecolor=T["grid"],
     )
 
     for i in range(1, 5):

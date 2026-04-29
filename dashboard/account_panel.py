@@ -539,6 +539,71 @@ def render_account_panel():
 
     st.markdown('</div>', unsafe_allow_html=True)
 
+    # ══════════════════════════════════════════════════════════════════════
+    #  DISPLAY SETTINGS — Theme
+    # ══════════════════════════════════════════════════════════════════════
+    st.markdown('<div class="acct-section">', unsafe_allow_html=True)
+    st.markdown('<div class="acct-title">🎨 DISPLAY SETTINGS</div>', unsafe_allow_html=True)
+    st.markdown(
+        '''<div class="acct-sub">
+        Choose your preferred colour theme. <b>Light</b> is the default — high-contrast
+        for bright environments. <b>Dark</b> is the classic terminal look. The toggle
+        in the top-right corner also switches themes instantly.
+        </div>''',
+        unsafe_allow_html=True,
+    )
+
+    _cur_theme = st.session_state.get("theme", "light")
+    _theme_col1, _theme_col2 = st.columns(2)
+
+    with _theme_col1:
+        _light_active = _cur_theme == "light"
+        _light_border = "var(--blue)" if _light_active else "var(--border)"
+        _light_bg     = "var(--blue-dim)" if _light_active else "var(--bg-card)"
+        _light_clr    = "var(--blue)" if _light_active else "var(--text-sec)"
+        _light_sub    = "✓ ACTIVE" if _light_active else "High contrast · Bright environments"
+        st.markdown(
+            f'''<div style="padding:14px 18px;border-radius:6px;background:{_light_bg};
+              border:2px solid {_light_border};font-family:var(--mono);text-align:center">
+              <div style="font-size:22px;margin-bottom:4px">&#9728;</div>
+              <div style="font-size:11px;font-weight:600;color:{_light_clr};
+                letter-spacing:.1em">LIGHT MODE</div>
+              <div style="font-size:9px;color:var(--text-mute);margin-top:3px;
+                letter-spacing:.06em">{_light_sub}</div>
+            </div>''',
+            unsafe_allow_html=True,
+        )
+        if st.button("Switch to Light", key="_acct_light_btn",
+                     type="secondary" if _light_active else "primary",
+                     use_container_width=True, disabled=_light_active):
+            st.session_state["theme"] = "light"
+            st.rerun()
+
+    with _theme_col2:
+        _dark_active = _cur_theme == "dark"
+        _dark_border = "var(--blue)" if _dark_active else "var(--border)"
+        _dark_bg     = "var(--blue-dim)" if _dark_active else "var(--bg-card)"
+        _dark_clr    = "var(--blue)" if _dark_active else "var(--text-sec)"
+        _dark_sub    = "✓ ACTIVE" if _dark_active else "Terminal style · Low-light"
+        st.markdown(
+            f'''<div style="padding:14px 18px;border-radius:6px;background:{_dark_bg};
+              border:2px solid {_dark_border};font-family:var(--mono);text-align:center">
+              <div style="font-size:22px;margin-bottom:4px">&#9790;</div>
+              <div style="font-size:11px;font-weight:600;color:{_dark_clr};
+                letter-spacing:.1em">DARK MODE</div>
+              <div style="font-size:9px;color:var(--text-mute);margin-top:3px;
+                letter-spacing:.06em">{_dark_sub}</div>
+            </div>''',
+            unsafe_allow_html=True,
+        )
+        if st.button("Switch to Dark", key="_acct_dark_btn",
+                     type="secondary" if _dark_active else "primary",
+                     use_container_width=True, disabled=_dark_active):
+            st.session_state["theme"] = "dark"
+            st.rerun()
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
     # CONNECTION SUMMARY
     st.markdown("---")
     st.markdown("**Connection Summary**")

@@ -41,13 +41,15 @@ def show_login_page():
 
     st.markdown("""
     <style>
+    /* ── Mobile-first login form ── */
     .auth-container {
         max-width: 420px;
-        margin: 80px auto 0;
+        margin: 40px auto 0;
         background: #0C1322;
         border: 1px solid #1A2540;
         border-radius: 8px;
         padding: 40px 36px;
+        box-sizing: border-box;
     }
     .auth-title {
         font-family: 'IBM Plex Mono', monospace;
@@ -61,6 +63,28 @@ def show_login_page():
         color: #7A8BA8;
         font-size: 13px;
         margin-bottom: 28px;
+    }
+    /* Prevent horizontal scroll on small screens */
+    @media (max-width: 480px) {
+        .auth-container {
+            margin: 16px auto 0;
+            padding: 24px 18px;
+            border-radius: 6px;
+            /* Allow it to fill most of the narrow viewport */
+            max-width: calc(100vw - 32px);
+        }
+        .auth-title {
+            font-size: 18px;
+        }
+    }
+    /* Ensure Streamlit's own form inputs fill the card width on mobile */
+    @media (max-width: 480px) {
+        .stTextInput > div > div > input {
+            font-size: 16px !important; /* prevents iOS Safari auto-zoom on focus */
+        }
+        .stFormSubmitButton button {
+            width: 100% !important;
+        }
     }
     </style>
     """, unsafe_allow_html=True)

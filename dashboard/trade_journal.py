@@ -8,9 +8,10 @@ Renders:
   4. Trade history table — filterable, sortable, with close-trade action
   5. Manual trade entry form — log trades placed outside the bot
 
-Data sources:
-  - logs/executed_trades.csv  (bot-executed + manually logged trades)
-  - logs/signals.json         (signal history for reference)
+Data sources (priority order):
+  1. FastAPI + PostgreSQL via /api/v1/trades  (primary — authenticated)
+  2. logs/executed_trades.csv                 (fallback if API unavailable)
+  - logs/signals.json                         (signal history for reference)
 """
 
 from __future__ import annotations
@@ -51,8 +52,69 @@ _TEXT   = "#DCE4F5"
 #  Data helpers
 # ────────────────────────────────────────────────────────────────────────────
 
+def _load_from_api() -> pd.DataFrame:
+    """
+    Fetch trades from the FastAPI backend (/api/v1/trades) and normalise
+    column names to match the CSV layout expected by the rest of the UI.
+    Returns an empty DataFrame on any failure.
+    """
+    try:
+        from dashboard.auth import get_api_client
+        client = get_api_client()
+        if client is None:
+            return pd.DataFrame()
+        result = client.list_trades(size=500)
+        trades = result.get("trades", [])
+        if not trades:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(trades)
+
+        # ── Normalise column names to CSV layout ──────────────────────────
+        # API → CSV mapping
+        if "id" in df.columns:
+            df["order_id"] = df["id"]
+        if "entry_price" in df.columns:
+            df["fill_price"] = df["entry_price"]   # CSV uses fill_price
+        if "opened_at" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["opened_at"], errors="coerce")
+        if "notes" in df.columns:
+            df["reason"] = df["notes"]
+        if "is_paper" in df.columns:
+            df["broker"] = df.apply(
+                lambda r: (r.get("broker") or "manual") + (" [paper]" if r.get("is_paper") else " [live]"),
+                axis=1,
+            )
+
+        # Coerce numeric
+        for col in ["pnl", "pnl_pct", "fill_price", "entry_price",
+                    "exit_price", "quantity", "stop_loss", "take_profit"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        # Parse timestamps
+        for col in ["timestamp", "closed_at"]:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors="coerce")
+
+        df["_source"] = "db"
+        return df
+
+    except Exception:
+        return pd.DataFrame()
+
+
 def _read_trades() -> pd.DataFrame:
-    """Load executed_trades.csv into a DataFrame with typed columns."""
+    """
+    Load trade data — tries the PostgreSQL API first, falls back to CSV.
+    Always returns a DataFrame with at minimum the columns the UI expects.
+    """
+    # ── 1. Try database API ───────────────────────────────────────────────
+    df_api = _load_from_api()
+    if not df_api.empty:
+        return df_api
+
+    # ── 2. CSV fallback ───────────────────────────────────────────────────
     if not os.path.exists(TRADE_LOG):
         return pd.DataFrame()
     try:
@@ -77,6 +139,7 @@ def _read_trades() -> pd.DataFrame:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce")
 
+    df["_source"] = "csv"
     return df
 
 
@@ -301,11 +364,11 @@ def render_trade_journal():
 
         fig_eq = _equity_chart(closed)
         if fig_eq:
-            st.plotly_chart(fig_eq, use_container_width=True, config={"displayModeBar": False})
+            st.plotly_chart(fig_eq, width="stretch", config={"displayModeBar": False})
 
         fig_wf = _waterfall_chart(closed)
         if fig_wf:
-            st.plotly_chart(fig_wf, use_container_width=True, config={"displayModeBar": False})
+            st.plotly_chart(fig_wf, width="stretch", config={"displayModeBar": False})
 
     # ═══════════════════════════════════════════════════════════════════════
     #  OPEN POSITIONS
@@ -321,7 +384,7 @@ def render_trade_journal():
         if "timestamp" in show_open.columns:
             show_open["timestamp"] = show_open["timestamp"].dt.strftime("%Y-%m-%d %H:%M")
 
-        st.dataframe(show_open, use_container_width=True, hide_index=True)
+        st.dataframe(show_open, width="stretch", hide_index=True)
 
         # Close trade form
         with st.expander("Close a Position", expanded=False):
@@ -335,10 +398,34 @@ def render_trade_journal():
             )
             if st.button("Close Trade", type="primary", key="do_close_trade"):
                 if sel_oid and exit_px > 0:
-                    from brokers.order_manager import OrderManager
-                    mgr = OrderManager()
-                    ok  = mgr.close_trade(sel_oid, exit_px, exit_rsn)
-                    if ok:
+                    _closed_ok = False
+                    # ── Try API first ──────────────────────────────────────
+                    try:
+                        from dashboard.auth import get_api_client
+                        _client = get_api_client()
+                        if _client:
+                            # Compute PnL from entry price if available
+                            _row = open_trades[open_trades["order_id"] == sel_oid].iloc[0]
+                            _entry = float(_row.get("fill_price") or _row.get("entry_price") or exit_px)
+                            _qty   = float(_row.get("quantity", 1))
+                            _side  = str(_row.get("side", "buy"))
+                            _pnl_pct = ((exit_px - _entry) / _entry) if _side == "buy" else ((_entry - exit_px) / _entry)
+                            _pnl     = _pnl_pct * _entry * _qty
+                            _client.close_trade(sel_oid, exit_px, _pnl, _pnl_pct)
+                            _closed_ok = True
+                    except Exception as _api_err:
+                        st.caption(f"API close failed ({_api_err}), trying CSV fallback…")
+
+                    # ── CSV fallback ───────────────────────────────────────
+                    if not _closed_ok:
+                        try:
+                            from brokers.order_manager import OrderManager
+                            mgr = OrderManager()
+                            _closed_ok = mgr.close_trade(sel_oid, exit_px, exit_rsn)
+                        except Exception as _csv_err:
+                            st.error(f"Could not close trade: {_csv_err}")
+
+                    if _closed_ok:
                         st.success(f"Trade {sel_oid} closed at {exit_px:.4f}.")
                         st.rerun()
                     else:
@@ -395,7 +482,7 @@ def render_trade_journal():
 
         st.dataframe(
             disp_fmt.sort_values("timestamp", ascending=False, key=lambda s: pd.to_datetime(s, errors="coerce")).head(200),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -440,20 +527,54 @@ def render_trade_journal():
         if not m_sym or not m_qty or not m_entry:
             st.error("Symbol, Quantity and Entry Price are required.")
         else:
-            from brokers.order_manager import OrderManager
-            mgr = OrderManager()
-            oid = mgr.log_manual_trade(
-                symbol=m_sym.strip().upper(),
-                side=m_side,
-                quantity=float(m_qty),
-                entry_price=float(m_entry),
-                stop_loss=float(m_sl) if m_sl else None,
-                take_profit=float(m_tp) if m_tp else None,
-                broker=m_broker.strip() or "manual",
-                reason=m_reason.strip() or "Manual entry",
-            )
-            st.success(f"Trade logged with ID: `{oid}` — it will appear above as an open position.")
-            st.rerun()
+            _logged_id = None
+
+            # ── Try API first ─────────────────────────────────────────────
+            try:
+                from dashboard.auth import get_api_client
+                _client = get_api_client()
+                if _client:
+                    _payload = {
+                        "symbol":      m_sym.strip().upper(),
+                        "side":        m_side,
+                        "order_type":  "market",
+                        "quantity":    float(m_qty),
+                        "entry_price": float(m_entry),
+                        "stop_loss":   float(m_sl) if m_sl else None,
+                        "take_profit": float(m_tp) if m_tp else None,
+                        "broker":      m_broker.strip() or "manual",
+                        "is_paper":    True,
+                        "notes":       m_reason.strip() or "Manual entry",
+                    }
+                    _res    = _client.create_trade(_payload)
+                    _logged_id = _res.get("id")
+            except Exception as _api_err:
+                st.caption(f"API log failed ({_api_err}), writing to CSV fallback…")
+
+            # ── CSV fallback ──────────────────────────────────────────────
+            if not _logged_id:
+                try:
+                    from brokers.order_manager import OrderManager
+                    mgr = OrderManager()
+                    _logged_id = mgr.log_manual_trade(
+                        symbol=m_sym.strip().upper(),
+                        side=m_side,
+                        quantity=float(m_qty),
+                        entry_price=float(m_entry),
+                        stop_loss=float(m_sl) if m_sl else None,
+                        take_profit=float(m_tp) if m_tp else None,
+                        broker=m_broker.strip() or "manual",
+                        reason=m_reason.strip() or "Manual entry",
+                    )
+                except Exception as _csv_err:
+                    st.error(f"Failed to log trade: {_csv_err}")
+                    _logged_id = None
+
+            if _logged_id:
+                st.success(f"Trade logged with ID: `{_logged_id}` — it will appear above as an open position.")
+                st.rerun()
+            else:
+                st.error("Trade could not be saved. Check the API server connection.")
 
     # ═══════════════════════════════════════════════════════════════════════
     #  SIGNAL LOG (reference)
@@ -486,6 +607,6 @@ def render_trade_journal():
                     sig_disp["score"] = sig_disp["score"].apply(
                         lambda x: f"{float(x):+.4f}" if pd.notna(x) else ""
                     )
-                st.dataframe(sig_disp, use_container_width=True, hide_index=True)
+                st.dataframe(sig_disp, width="stretch", hide_index=True)
         else:
             st.caption("No signals recorded yet — load a chart and signals will appear here.")

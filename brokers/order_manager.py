@@ -99,12 +99,14 @@ class OrderManager:
         require_confirm: bool = True,
         confirm_timeout: int  = 120,
         paper_trading:   bool = True,
+        api_client       = None,   # dashboard.api_client.APIClient — optional DB write
     ):
         self.broker          = broker
         self.discord         = discord
         self.require_confirm = require_confirm
         self.confirm_timeout = confirm_timeout
         self.paper_trading   = paper_trading
+        self.api_client      = api_client
         self._lock           = threading.Lock()
 
         Path("logs").mkdir(parents=True, exist_ok=True)
@@ -235,7 +237,14 @@ class OrderManager:
         with open(self.TRADE_LOG, "a", newline="", encoding="utf-8-sig") as f:
             csv.DictWriter(f, fieldnames=self.LOG_COLS, extrasaction="ignore").writerow(row)
         log.info(f"Manual trade logged: {order_id} {side.upper()} {quantity} {symbol.upper()} @ {entry_price}")
-        return order_id
+
+        # Dual-write to database (best-effort)
+        db_id = self._log_to_db({
+            **row,
+            "order_type": "market",
+            "is_paper":   self.paper_trading,
+        })
+        return db_id or order_id
 
     def close_trade(self, order_id: str, exit_price: float, exit_reason: str = "manual") -> bool:
         """Mark an open trade as closed, compute P&L. Returns True if found."""
@@ -363,6 +372,36 @@ class OrderManager:
         except Exception as e:
             log.warning(f"CSV migration failed: {e}")
 
+    def _log_to_db(self, trade_dict: dict) -> Optional[str]:
+        """
+        Write a trade to the PostgreSQL database via the FastAPI client.
+        Returns the new database ID or None if unavailable / failed.
+        Silently swallows errors so CSV logging is never interrupted.
+        """
+        if not self.api_client:
+            return None
+        try:
+            payload = {
+                "symbol":      trade_dict.get("symbol", ""),
+                "side":        trade_dict.get("side", "buy"),
+                "order_type":  trade_dict.get("order_type", "market"),
+                "quantity":    float(trade_dict.get("quantity", 0)),
+                "entry_price": float(trade_dict.get("entry_price") or trade_dict.get("fill_price") or 0),
+                "stop_loss":   float(trade_dict["stop_loss"])   if trade_dict.get("stop_loss")   else None,
+                "take_profit": float(trade_dict["take_profit"]) if trade_dict.get("take_profit") else None,
+                "strategy":    trade_dict.get("strategy"),
+                "broker":      trade_dict.get("broker", "manual"),
+                "is_paper":    bool(trade_dict.get("is_paper", self.paper_trading)),
+                "notes":       trade_dict.get("reason") or trade_dict.get("notes"),
+            }
+            result = self.api_client.create_trade(payload)
+            db_id = result.get("id")
+            log.info(f"Trade also written to DB: {db_id}")
+            return db_id
+        except Exception as e:
+            log.warning(f"DB write failed (CSV is authoritative): {e}")
+            return None
+
     def _log_trade(
         self,
         request:      OrderRequest,
@@ -396,3 +435,10 @@ class OrderManager:
         with open(self.TRADE_LOG, "a", newline="", encoding="utf-8-sig") as f:
             csv.DictWriter(f, fieldnames=self.LOG_COLS, extrasaction="ignore").writerow(row)
         log.info(f"Trade logged: {result.order_id} | {result.status}")
+
+        # Dual-write to database (best-effort, non-blocking)
+        self._log_to_db({
+            **row,
+            "order_type": "market",
+            "is_paper":   self.paper_trading,
+        })

@@ -46,24 +46,31 @@ st.set_page_config(
 # ── Enforce authentication ─────────────────────────────────────────────────────
 require_auth()   # will st.stop() and show login form if not logged in
 
-# ── Logout button in top-right corner ─────────────────────────────────────────
+# ── Logout button + theme toggle in top-right corner ──────────────────────────
 _user_info = st.session_state.get("_auth_user", {})
 with st.container():
-    col_spacer, col_user, col_logout = st.columns([8, 1.5, 0.5])
+    col_spacer, col_user, col_theme, col_logout = st.columns([7.5, 1.5, 0.5, 0.5])
     with col_user:
         st.caption(f"👤 {_user_info.get('username', '')}  [{_user_info.get('role', '')}]")
+    with col_theme:
+        _cur_theme = st.session_state.get("theme", "light")
+        _theme_icon = "☾" if _cur_theme == "light" else "☀"
+        _theme_help = "Switch to Dark mode" if _cur_theme == "light" else "Switch to Light mode"
+        if st.button(_theme_icon, help=_theme_help, key="_theme_btn"):
+            st.session_state["theme"] = "dark" if _cur_theme == "light" else "light"
+            st.rerun()
     with col_logout:
         if st.button("⏏", help="Sign out", key="_logout_btn"):
             logout()
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  DESIGN SYSTEM — IBM Plex Mono + Institutional Terminal Dark
+#  DESIGN SYSTEM — IBM Plex Mono + Institutional Terminal (Dark default)
 # ═══════════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap');
 
-/* ── CSS Variables ── */
+/* ── CSS Variables — Dark Theme (base/fallback) ── */
 :root {
   --bg-base:    #080D1A;
   --bg-surface: #0C1322;
@@ -437,9 +444,234 @@ hr { border-color: var(--border) !important; margin: 6px 0 !important; }
   font-size: 9px;
   color: var(--text-mute);
   letter-spacing: 0.08em;
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: none;
 }
+.qt-status-bar::-webkit-scrollbar { display: none; }
 .qt-status-live { color: var(--green); }
 .qt-status-stale { color: var(--red); }
+
+/* ── Pinned Ticker Tabs ── */
+.qt-ticker-tabs {
+  display: flex;
+  align-items: stretch;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 0 8px;
+  gap: 2px;
+}
+.qt-ticker-tabs::-webkit-scrollbar { display: none; }
+.qt-ticker-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 6px 14px 4px;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  font-family: var(--mono);
+  transition: all 0.15s;
+  min-width: 80px;
+  position: relative;
+}
+.qt-ticker-tab:hover { background: var(--bg-hover); }
+.qt-ticker-tab.active {
+  border-bottom-color: var(--blue);
+  background: var(--bg-card);
+}
+.qt-ticker-tab-sym {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-pri);
+  letter-spacing: 0.04em;
+}
+.qt-ticker-tab-sig {
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  margin-top: 1px;
+  font-weight: 600;
+}
+.qt-ticker-tab-sig.buy  { color: var(--green); }
+.qt-ticker-tab-sig.sell { color: var(--red); }
+.qt-ticker-tab-sig.hold { color: var(--amber); }
+.qt-ticker-tab-sig.none { color: var(--text-mute); }
+.qt-ticker-tab-px {
+  font-size: 9px;
+  color: var(--text-sec);
+  margin-top: 1px;
+}
+.qt-ticker-tab-close {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  font-size: 8px;
+  color: var(--text-mute);
+  cursor: pointer;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 2px;
+}
+.qt-ticker-tab-close:hover { color: var(--red); background: var(--red-dim); }
+.qt-ticker-tab-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 12px;
+  color: var(--text-mute);
+  font-size: 16px;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: all 0.15s;
+  align-self: center;
+}
+.qt-ticker-tab-add:hover { color: var(--blue); background: var(--blue-dim); }
+
+/* ── Price Sparkline mini chart ── */
+.qt-sparkline-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin: 6px 0;
+}
+.qt-sparkline-label { font-size: 9px; color: var(--text-mute); font-family: var(--mono); letter-spacing: 0.1em; }
+.qt-sparkline-value { font-size: 12px; font-weight: 600; font-family: var(--mono); color: var(--text-pri); }
+.qt-sparkline-delta { font-size: 9px; font-family: var(--mono); }
+
+/* ── Score bar gradient ── */
+.qt-score-fill-buy  { background: linear-gradient(90deg, #00C9A7, rgba(0,201,167,0.4)); }
+.qt-score-fill-sell { background: linear-gradient(90deg, #FF4560, rgba(255,69,96,0.4)); }
+.qt-score-fill-neu  { background: linear-gradient(90deg, #4B9FFF, rgba(75,159,255,0.4)); }
+
+/* ── Mini stats grid (2-col) in panel ── */
+.qt-mini-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin: 6px 0;
+}
+.qt-mini-stat {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-family: var(--mono);
+}
+.qt-mini-stat-label { font-size: 8px; color: var(--text-mute); letter-spacing: 0.12em; text-transform: uppercase; }
+.qt-mini-stat-value { font-size: 12px; font-weight: 600; color: var(--text-pri); margin-top: 2px; }
+
+/* ── Toolbar responsive ── */
+.qt-toolbar-wrap {
+  padding: 8px 12px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.qt-toolbar-wrap::-webkit-scrollbar { display: none; }
+
+/* ══════════════════════════════════════
+   MOBILE RESPONSIVE  (≤ 768 px)
+══════════════════════════════════════ */
+@media (max-width: 768px) {
+
+  /* ── Header ── */
+  .qt-header { padding: 0 12px; height: 44px; }
+  .qt-logo { font-size: 13px; }
+  .qt-header-right > span:not(:first-child) { display: none; }
+
+  /* ── KPI strip — 3 columns instead of 6 ── */
+  .qt-kpi-strip { grid-template-columns: repeat(3, 1fr) !important; gap: 4px !important; padding: 8px 10px !important; }
+  .qt-kpi-value { font-size: 12px !important; }
+  .qt-kpi-label { font-size: 7px !important; }
+
+  /* ── Status bar — single scrollable row ── */
+  .qt-status-bar { gap: 12px; padding: 4px 10px; font-size: 8px; }
+
+  /* ── Ticker tabs — always scroll ── */
+  .qt-ticker-tabs { padding: 0 4px; }
+  .qt-ticker-tab { padding: 5px 10px 3px; min-width: 70px; }
+
+  /* ── Main Streamlit columns — stack vertically ── */
+  [data-testid="column"] { min-width: 100% !important; width: 100% !important; }
+
+  /* ── Tabs bar — scrollable ── */
+  [data-testid="stTabs"] > div:first-child { overflow-x: auto; flex-wrap: nowrap !important; }
+  [data-testid="stTabs"] button { padding: 8px 12px !important; font-size: 10px !important; }
+
+  /* ── Inputs — larger touch targets ── */
+  input, [data-baseweb="select"] > div { min-height: 40px !important; font-size: 14px !important; }
+  [data-testid="baseButton-primary"],
+  [data-testid="baseButton-secondary"] { min-height: 40px !important; font-size: 12px !important; }
+
+  /* ── Signal card text ── */
+  .qt-signal-label { font-size: 20px !important; }
+  .qt-signal-meta  { font-size: 10px !important; }
+
+  /* ── Level rows ── */
+  .qt-level-row { padding: 8px 12px !important; font-size: 12px !important; }
+
+  /* ── Charts full width ── */
+  .js-plotly-plot, .plotly { width: 100% !important; }
+
+  /* ── Dataframe scrollable ── */
+  [data-testid="stDataFrame"] { overflow-x: auto !important; }
+
+  /* ── Expander — always full width ── */
+  [data-testid="stExpander"] { width: 100% !important; }
+}
+
+/* ══════════════════════════════════════
+   EXTRA SMALL  (≤ 480 px)
+══════════════════════════════════════ */
+@media (max-width: 480px) {
+  .qt-kpi-strip { grid-template-columns: repeat(2, 1fr) !important; }
+  .qt-header-right { display: none !important; }
+  .qt-logo { font-size: 12px; }
+  [data-testid="stTabs"] button { padding: 6px 8px !important; font-size: 9px !important; }
+  .qt-ticker-tab { min-width: 60px; padding: 4px 8px 3px; }
+  .qt-ticker-tab-sym { font-size: 10px; }
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ── Theme override — injected dynamically so the last :root wins in the DOM ───
+# Light mode is the default. When theme == "light" we override the dark-base
+# :root above with high-contrast light values; dark uses the base as-is.
+if st.session_state.get("theme", "light") == "light":
+    st.markdown("""
+<style>
+:root {
+  --bg-base:    #F2F6FC;
+  --bg-surface: #E8EEF8;
+  --bg-card:    #FFFFFF;
+  --bg-hover:   #DBE4F5;
+  --border:     #BDC9DC;
+  --border-lit: #879EC2;
+  --border-acc: #5278B0;
+  --text-pri:   #0B1929;
+  --text-sec:   #365070;
+  --text-mute:  #7090AE;
+  --green:      #00735C;
+  --green-dim:  rgba(0,115,92,0.11);
+  --red:        #C0001E;
+  --red-dim:    rgba(192,0,30,0.09);
+  --amber:      #96620A;
+  --amber-dim:  rgba(150,98,10,0.10);
+  --blue:       #1555A2;
+  --blue-dim:   rgba(21,85,162,0.10);
+  --purple:     #6030BE;
+}
+/* Make Streamlit native widgets look right on light bg */
+[data-testid="stAlert"] { background: var(--bg-card) !important; }
+[data-testid="stToast"] { color: var(--text-pri) !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -478,6 +710,8 @@ _defaults = dict(
     alert_engine=AlertEngine(), df=None, rec=None,
     # Use config UI defaults so Settings → Save Defaults takes effect on restart
     symbol=_cfg_sym,   interval=_cfg_ivl, period=_cfg_per, source=_cfg_src,
+    # Display theme: "light" is the default
+    theme="light",
     bitoasis_connected=False,
     backtest_run=False, backtest_equity=None, backtest_trades=None,
     backtest_metrics=None, historical_signals=[],
@@ -487,6 +721,12 @@ _defaults = dict(
     strategy_mode="multi",
     # Markov signal history for chart overlay
     markov_signals=[],
+    # ── Multi-ticker pinned tabs ─────────────────────────────────────
+    # List of pinned symbols (shown as tabs above the toolbar)
+    pinned_tickers=[_cfg_sym],
+    # Per-ticker independent state cache:
+    # { symbol: {df, rec, signal, entry_price, close_price, last_load, interval, period, source} }
+    _tabs_cache={},
 )
 for k, v in _defaults.items():
     if k not in st.session_state:
@@ -630,11 +870,85 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  PINNED TICKER TABS
+# ═══════════════════════════════════════════════════════════════════════════════
+_pinned   = st.session_state.pinned_tickers
+_tc       = st.session_state._tabs_cache
+_active   = st.session_state.symbol
+
+# Build the HTML tab bar (decorative only — buttons below handle interaction)
+_tabs_html = '<div class="qt-ticker-tabs">'
+for _t in _pinned:
+    _td   = _tc.get(_t, {})
+    _sig  = _td.get("signal", "")
+    _px   = _td.get("close_price", 0)
+    _chg  = _td.get("chg_pct", 0)
+    _sig_cls  = {"BUY":"buy","SELL":"sell","HOLD":"hold"}.get(_sig, "none")
+    _sig_txt  = _sig if _sig else "···"
+    _active_cls = " active" if _t == _active else ""
+    _px_str   = f"${_px:,.4f}" if _px else ""
+    _chg_col  = "var(--green)" if _chg >= 0 else "var(--red)"
+    _chg_str  = f'<span style="color:{_chg_col};font-size:8px">{_chg:+.2f}%</span>' if _px else ""
+    _tabs_html += (
+        f'<div class="qt-ticker-tab{_active_cls}">'
+        f'  <span class="qt-ticker-tab-sym">{_t}</span>'
+        f'  <span class="qt-ticker-tab-sig {_sig_cls}">{_sig_txt}</span>'
+        f'  <span class="qt-ticker-tab-px">{_px_str} {_chg_str}</span>'
+        f'</div>'
+    )
+_tabs_html += '</div>'
+st.markdown(_tabs_html, unsafe_allow_html=True)
+
+# Interactive tab row — one button per pinned ticker + an unpin button
+_n_pinned = len(_pinned)
+if _n_pinned > 0:
+    _tab_btns = st.columns(_n_pinned + 1, gap="small")
+    for _i, _t in enumerate(_pinned):
+        _btn_label = f"{'▶ ' if _t == _active else ''}{_t}"
+        _btn_type  = "primary" if _t == _active else "secondary"
+        if _tab_btns[_i].button(_btn_label, key=f"_pin_tab_{_t}", type=_btn_type,
+                                 use_container_width=True):
+            # Save current ticker state before switching
+            _tc[st.session_state.symbol] = {
+                "df":          st.session_state.df,
+                "rec":         st.session_state.rec,
+                "signal":      st.session_state.rec.signal if st.session_state.rec else "",
+                "close_price": float(st.session_state.df["Close"].iloc[-1]) if st.session_state.df is not None and len(st.session_state.df) > 0 else 0,
+                "chg_pct":     float((st.session_state.df["Close"].iloc[-1] / st.session_state.df["Close"].iloc[-2] - 1) * 100) if st.session_state.df is not None and len(st.session_state.df) > 1 else 0,
+                "last_load":   time.time(),
+                "interval":    st.session_state.interval,
+                "period":      st.session_state.period,
+                "source":      st.session_state.source,
+            }
+            st.session_state._tabs_cache = _tc
+            # Restore cached state for the clicked ticker (if available)
+            if _t != _active:
+                _cached = _tc.get(_t, {})
+                st.session_state.symbol = _t
+                if _cached.get("df") is not None:
+                    st.session_state.df          = _cached["df"]
+                    st.session_state.rec         = _cached.get("rec")
+                    st.session_state.interval    = _cached.get("interval", st.session_state.interval)
+                    st.session_state.period      = _cached.get("period",   st.session_state.period)
+                    st.session_state.source      = _cached.get("source",   st.session_state.source)
+                else:
+                    st.session_state.df = None   # force fresh load
+                st.rerun()
+
+    # ─ Unpin active ticker button (only show if >1 pinned)
+    if _n_pinned > 1:
+        if _tab_btns[_n_pinned].button("✕ UNPIN", key="_unpin_btn", use_container_width=True):
+            st.session_state.pinned_tickers = [t for t in _pinned if t != _active]
+            st.rerun()
+    else:
+        _tab_btns[_n_pinned].markdown("")   # spacer
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  TOOLBAR ROW
 # ═══════════════════════════════════════════════════════════════════════════════
 with st.container():
-    st.markdown('<div style="padding:8px 16px;background:var(--bg-surface);border-bottom:1px solid var(--border)">', unsafe_allow_html=True)
-    t1,t2,t3,t4,t5,t6,t7,t8,t9 = st.columns([2.2,1,1,1.1,1.3,0.75,0.75,0.75,0.75])
+    st.markdown('<div style="padding:8px 12px;background:var(--bg-surface);border-bottom:1px solid var(--border)">', unsafe_allow_html=True)
+    t1,t2,t3,t4,t5,t6,t7,t8,t9,t10 = st.columns([2.2,1,1,1.1,1.3,0.7,0.7,0.7,0.7,0.7])
 
     sym  = t1.text_input("", value=st.session_state.symbol, placeholder="Symbol", label_visibility="collapsed", key="sym_toolbar")
     if st.session_state.source in ("kraken","kucoin","binance","bitoasis"):
@@ -666,6 +980,18 @@ with st.container():
     auto      = t7.toggle("AUTO",    value=st.session_state.auto_refresh)
     rsec      = t8.selectbox("", [10,30,60,300], index=1, label_visibility="collapsed", format_func=lambda x:f"{x}s")
     clear_btn = t9.button("✕ CACHE", type="secondary", use_container_width=True)
+
+    # ── PIN button — add current symbol to pinned tabs ─────────────────────
+    _already_pinned = sym.strip().upper() in [p.upper() for p in st.session_state.pinned_tickers]
+    _pin_label = "✓ PINNED" if _already_pinned else "📌 PIN"
+    _pin_clicked = t10.button(_pin_label, type="secondary", use_container_width=True,
+                               help="Pin this symbol as a quick-access tab")
+    if _pin_clicked and not _already_pinned:
+        _new_sym = sym.strip().upper() or sym.strip()
+        if _new_sym and _new_sym not in st.session_state.pinned_tickers:
+            st.session_state.pinned_tickers = st.session_state.pinned_tickers + [_new_sym]
+            st.toast(f"📌 {_new_sym} pinned")
+            st.rerun()
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -782,6 +1108,27 @@ if need_load:
             st.session_state.ma_cross_result = mac.score(df)
         except Exception:
             st.session_state.ma_cross_result = None
+
+        # ── Update tabs cache with fresh data ──────────────────────────────
+        if st.session_state.df is not None and len(st.session_state.df) > 1:
+            _df_fresh = st.session_state.df
+            _close_now  = float(_df_fresh["Close"].iloc[-1])
+            _close_prev = float(_df_fresh["Close"].iloc[-2])
+            _chg_now    = (_close_now / _close_prev - 1) * 100 if _close_prev else 0
+            st.session_state._tabs_cache[sym] = {
+                "df":          _df_fresh,
+                "rec":         st.session_state.rec,
+                "signal":      st.session_state.rec.signal if st.session_state.rec else "",
+                "close_price": _close_now,
+                "chg_pct":     _chg_now,
+                "last_load":   time.time(),
+                "interval":    ivl,
+                "period":      per,
+                "source":      src,
+            }
+            # Ensure this symbol is pinned
+            if sym not in st.session_state.pinned_tickers:
+                st.session_state.pinned_tickers = st.session_state.pinned_tickers + [sym]
 
 df  = st.session_state.df
 rec = st.session_state.rec
@@ -953,13 +1300,14 @@ with chart_col:
                 show_ma_cross  =show_mac,
                 markov_signals =mkv_sigs,
                 show_markov    =_is_markov_mode,
+                light_mode     =st.session_state.get("theme", "light") == "light",
             )
             # Patch BB visibility
             if not show_bb:
                 for trace in fig.data:
                     if "BB" in (trace.name or ""):
                         trace.visible = False
-            st.plotly_chart(fig, use_container_width=True,
+            st.plotly_chart(fig, width="stretch",
                 config=dict(
                     scrollZoom=True,
                     displayModeBar=True,
@@ -1058,7 +1406,7 @@ with chart_col:
                         xaxis=dict(gridcolor="#1A2540"),
                         yaxis=dict(gridcolor="#1A2540", side="right"),
                     )
-                    st.plotly_chart(fig_eq, use_container_width=True,
+                    st.plotly_chart(fig_eq, width="stretch",
                                     config={"displayModeBar": False})
 
                 # ── KPI metrics ───────────────────────────────────────
@@ -1093,7 +1441,7 @@ with chart_col:
                             yaxis=dict(gridcolor="#1A2540", side="right"),
                         )
                         fp.add_hline(y=0, line=dict(color="#3A4A62", width=1))
-                        st.plotly_chart(fp, use_container_width=True,
+                        st.plotly_chart(fp, width="stretch",
                                         config={"displayModeBar": False})
 
                     disp = tdf.copy()
@@ -1104,7 +1452,7 @@ with chart_col:
                         "pnl_pct", "pnl_dollar",
                     ] if c in disp.columns]
                     try:
-                        st.dataframe(disp[show_c], use_container_width=True, hide_index=True)
+                        st.dataframe(disp[show_c], width="stretch", hide_index=True)
                     except Exception:
                         st.table(disp[show_c].head(50))
                 else:
@@ -1131,7 +1479,7 @@ with chart_col:
             try:
                 st.dataframe(
                     df[[c for c in ind_cols if c in df.columns]].tail(30).round(4).iloc[::-1],
-                    use_container_width=True,
+                    width="stretch",
                 )
             except Exception:
                 # Fallback if DataFrame component CSS fails to load
@@ -1359,11 +1707,48 @@ with panel_col:
                 if clean:
                     st.markdown(f'<div style="font-size:10px;color:var(--text-sec);padding:2px 0;font-family:var(--mono)">{clean}</div>', unsafe_allow_html=True)
 
+        # ── Execute Trade panel ───────────────────────────────────────────
+        _trade_border = "var(--green)" if rec.signal == "BUY" else ("var(--red)" if rec.signal == "SELL" else "var(--border)")
+        with st.expander(f"⚡ EXECUTE TRADE  ({rec.signal})", expanded=rec.signal in ("BUY","SELL")):
+            if rec.signal == "HOLD":
+                st.markdown('<div style="font-size:10px;color:var(--text-mute);font-family:var(--mono);padding:6px 0">Signal is HOLD — no trade recommended.</div>', unsafe_allow_html=True)
+            else:
+                _signal_color = "var(--green)" if rec.signal == "BUY" else "var(--red)"
+                st.markdown(
+                    f'<div style="font-size:9px;letter-spacing:.1em;color:{_signal_color};font-family:var(--mono);font-weight:700;margin-bottom:8px">'
+                    f'● {rec.signal} SIGNAL  ·  CONFIDENCE {rec.confidence_pct:.0f}%  ·  {sym}</div>',
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    f'<div style="font-family:var(--mono);font-size:10px;color:var(--text-sec);padding:8px 12px;background:var(--bg-surface);border-radius:4px;border-left:3px solid {_signal_color};margin-bottom:8px">'
+                    f'Entry: <b style="color:var(--amber)">${rec.entry_price:.4f}</b>'
+                    f' · SL: <b style="color:var(--red)">${rec.stop_loss:.4f}</b>'
+                    f' · TP: <b style="color:var(--green)">${rec.take_profit:.4f}</b>'
+                    f' · Size: <b style="color:var(--text-pri)">{rec.position_size_pct:.1f}%</b></div>',
+                    unsafe_allow_html=True,
+                )
+                with st.form("exec_trade_form", clear_on_submit=False):
+                    _qty = st.number_input("Order size %", min_value=0.01,
+                                           value=float(rec.position_size_pct), step=0.5,
+                                           format="%.2f", key="exec_qty")
+                    _order_type = st.selectbox("Order type", ["Market", "Limit"], key="exec_type")
+                    _limit_px = None
+                    if _order_type == "Limit":
+                        _limit_px = st.number_input("Limit price", value=float(rec.entry_price),
+                                                    format="%.4f", key="exec_limit")
+                    _submitted = st.form_submit_button(
+                        f"► SEND {rec.signal} ORDER",
+                        type="primary", use_container_width=True,
+                    )
+                    if _submitted:
+                        _broker = st.session_state.get("active_broker", "paper")
+                        st.info(f"Order queued: {rec.signal} {_qty:.2f}% via {_broker}. Configure broker in ⚙ ACCOUNTS tab.", icon="⚡")
+
         # Log signal
         from utils.logger import TradeLogger
         TradeLogger().log_signal(rec.to_dict())
 
-    # ── Alert feed ────────────────────────────────────────────────────────────
+    # ── Alert feed ───────────────────────────────────────────
     st.markdown('<div class="qt-section" style="margin-top:10px">ALERT FEED</div>', unsafe_allow_html=True)
     a_col1, a_col2 = st.columns([3,1])
     a_col1.markdown(f'<div style="font-size:9px;color:var(--text-mute);font-family:var(--mono)">{len(engine.queue)} EVENTS</div>', unsafe_allow_html=True)
@@ -1386,7 +1771,7 @@ with panel_col:
     if not engine.queue:
         st.markdown('<div style="color:var(--text-mute);font-size:10px;padding:8px;font-family:var(--mono)">No alerts yet</div>', unsafe_allow_html=True)
 
-    # ── Alert channels ────────────────────────────────────────────────────────
+    # ── Alert channels ───────────────────────────────────────────
     with st.expander("SIGNAL ALERT CHANNELS", expanded=False):
         st.markdown(
             '''<div style="font-family:var(--mono);font-size:10px;color:var(--text-sec);
@@ -1397,7 +1782,7 @@ with panel_col:
             <b>Discord here</b> = one-way push via Webhook URL (no bot needed, instant setup).<br>
             For interactive ✅/❌ trade confirmation → configure the Discord Bot in the ⚙ ACCOUNTS tab.
             </div>''',
-            afe_allow_html=True
+            unsafe_allow_html=True
         )
         at1, at2, at3, at4 = st.tabs(["📧 EMAIL","💬 DISCORD WEBHOOK","📱 WHATSAPP","✈ TELEGRAM"])
         with at1:

@@ -434,7 +434,7 @@ def _render_ticker_detail(r: dict, sym: str, sig: str, score: float, conf: float
                 yaxis=dict(gridcolor=THEME["grid"], side="right", tickfont=dict(size=9)),
                 hovermode="x unified",
             )
-            st.plotly_chart(fig_mini, use_container_width=True, config=dict(displayModeBar=False))
+            st.plotly_chart(fig_mini, width="stretch", config=dict(displayModeBar=False))
         except Exception:
             pass
 

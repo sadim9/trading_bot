@@ -13,6 +13,7 @@ Renders the full broker configuration UI:
 
 import streamlit as st
 from brokers.order_manager import OrderManager, CrossoverConfig
+from dashboard.auth import get_api_client
 
 
 def render_broker_panel(df, rec, ma_cross_result=None):
@@ -144,6 +145,7 @@ def render_broker_panel(df, rec, ma_cross_result=None):
             require_confirm=require_confirm,
             confirm_timeout=confirm_timeout,
             paper_trading=paper,
+            api_client=get_api_client(),
         )
 
     # ── Fire MA cross trade if auto-trade enabled ─────────────────────
