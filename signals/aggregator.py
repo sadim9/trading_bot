@@ -136,10 +136,14 @@ class SignalAggregator:
             # Pure Markov Chains — only this strategy with full weight
             if MARKOV_OK:
                 self._strategies["markov_chains"] = MarkovChainsStrategy(
-                    n_states = self.cfg.strategy.markov_n_states,
-                    tau      = self.cfg.strategy.markov_tau,
-                    eps      = self.cfg.strategy.markov_eps,
-                    lookback = self.cfg.strategy.markov_lookback,
+                    n_states           = self.cfg.strategy.markov_n_states,
+                    tau                = self.cfg.strategy.markov_tau,
+                    eps                = self.cfg.strategy.markov_eps,
+                    lookback           = self.cfg.strategy.markov_lookback,
+                    n_step             = getattr(self.cfg.strategy, "markov_n_step",           3),
+                    n_step_weight      = getattr(self.cfg.strategy, "markov_n_step_weight",    0.35),
+                    regime_bull_thresh = getattr(self.cfg.strategy, "markov_regime_bull",      0.55),
+                    regime_bear_thresh = getattr(self.cfg.strategy, "markov_regime_bear",      0.55),
                 )
                 self._weights["markov_chains"] = 1.0
             else:
@@ -150,10 +154,14 @@ class SignalAggregator:
             # Markov 40% + classic strategies 60% (renormalised)
             if MARKOV_OK:
                 self._strategies["markov_chains"] = MarkovChainsStrategy(
-                    n_states = self.cfg.strategy.markov_n_states,
-                    tau      = self.cfg.strategy.markov_tau,
-                    eps      = self.cfg.strategy.markov_eps,
-                    lookback = self.cfg.strategy.markov_lookback,
+                    n_states           = self.cfg.strategy.markov_n_states,
+                    tau                = self.cfg.strategy.markov_tau,
+                    eps                = self.cfg.strategy.markov_eps,
+                    lookback           = self.cfg.strategy.markov_lookback,
+                    n_step             = getattr(self.cfg.strategy, "markov_n_step",           3),
+                    n_step_weight      = getattr(self.cfg.strategy, "markov_n_step_weight",    0.35),
+                    regime_bull_thresh = getattr(self.cfg.strategy, "markov_regime_bull",      0.55),
+                    regime_bear_thresh = getattr(self.cfg.strategy, "markov_regime_bear",      0.55),
                 )
                 self._weights["markov_chains"] = 0.40
                 # Classic strategies share the remaining 60%
@@ -312,4 +320,4 @@ class SignalAggregator:
         kelly_f  *= rc.kelly_fraction
         kelly_f   = min(kelly_f, rc.max_position_pct)
 
-        return round(kelly_f * 100, 2)
+    

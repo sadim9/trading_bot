@@ -28,9 +28,12 @@ logging.basicConfig(
     format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
 )
 
-POLL_INTERVAL = int(os.getenv("BOT_POLL_INTERVAL_SECONDS", "60"))
-DATA_SOURCE   = os.getenv("BOT_DEFAULT_SOURCE", "yfinance")
+POLL_INTERVAL  = int(os.getenv("BOT_POLL_INTERVAL_SECONDS", "60"))
+DATA_SOURCE    = os.getenv("BOT_DEFAULT_SOURCE", "yfinance")
 WORKER_USER_ID = os.getenv("BOT_WORKER_USER_ID", "")   # admin user ID for DB writes
+# Strategy mode: "multi" | "markov" | "markov_multi"
+# Set to "markov_multi" for testing the enhanced Markov Chains framework
+STRATEGY_MODE  = os.getenv("BOT_STRATEGY_MODE", "markov_multi")
 
 _running = True
 
@@ -60,8 +63,9 @@ async def run_signal_cycle(symbols: list[str]):
         log.error(f"Failed to import bot modules: {e}")
         return
 
-    agg      = SignalAggregator(CONFIG)
+    agg      = SignalAggregator(CONFIG, strategy_mode=STRATEGY_MODE)
     risk_mgr = RiskManager(CONFIG.risk)
+    log.info(f"Strategy mode: {STRATEGY_MODE}")
 
     async with AsyncSessionLocal() as db:
         for symbol in symbols:
@@ -134,13 +138,4 @@ async def main():
         cycle_start = datetime.now(timezone.utc)
         log.info(f"--- Cycle start: {cycle_start.isoformat()} ---")
         await run_signal_cycle(symbols)
-        elapsed = (datetime.now(timezone.utc) - cycle_start).total_seconds()
-        sleep_for = max(0, POLL_INTERVAL - elapsed)
-        log.info(f"--- Cycle done in {elapsed:.1f}s, sleeping {sleep_for:.0f}s ---")
-        await asyncio.sleep(sleep_for)
-
-    log.info("Bot worker stopped.")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        elapsed = (datetime.now(timezone.utc) - cycle_start).total_seconds

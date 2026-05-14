@@ -1624,61 +1624,135 @@ with panel_col:
             _mkv_data = rec.strategy_breakdown.get("markov_chains", {})
             _mkv_sub  = _mkv_data.get("sub_scores", {})
             if _mkv_sub:
-                _diag     = float(_mkv_sub.get("diag_mean",   0))
-                _state    = _mkv_sub.get("current_state", "?")
-                _j_star   = _mkv_sub.get("j_star", "?")
-                _p_hat    = float(_mkv_sub.get("p_hat",    0))
-                _market_q = float(_mkv_sub.get("market_q", 0))
-                _gap      = float(_mkv_sub.get("gap",      0))
-                _persist  = float(_mkv_sub.get("persist",  0))
-                _entry_ok = bool(_mkv_sub.get("entry_ok",  False))
-                _is_bull  = bool(_mkv_sub.get("is_bullish",False))
+                _diag          = float(_mkv_sub.get("diag_mean",   0))
+                _state         = _mkv_sub.get("current_state", "?")
+                _j_star        = _mkv_sub.get("j_star", "?")
+                _j_star_1      = _mkv_sub.get("j_star_1step", "?")
+                _j_star_n      = _mkv_sub.get("j_star_nstep", "?")
+                _p_hat         = float(_mkv_sub.get("p_hat",       0))
+                _p_hat_1       = float(_mkv_sub.get("p_hat_1step", 0))
+                _p_hat_n       = float(_mkv_sub.get("p_hat_nstep", 0))
+                _market_q      = float(_mkv_sub.get("market_q",    0))
+                _gap           = float(_mkv_sub.get("gap",         0))
+                _persist       = float(_mkv_sub.get("persist",     0))
+                _entry_ok      = bool(_mkv_sub.get("entry_ok",     False))
+                _is_bull       = bool(_mkv_sub.get("is_bullish",   False))
+                _regime        = _mkv_sub.get("regime", "SIDEWAYS")
+                _pi_bull       = float(_mkv_sub.get("pi_bull",     0))
+                _pi_bear       = float(_mkv_sub.get("pi_bear",     0))
+                _pi_edge       = float(_mkv_sub.get("pi_edge",     0))
+                _regime_align  = bool(_mkv_sub.get("regime_aligned", False))
+                _pi_dist       = _mkv_sub.get("stationary_distribution", [])
+                _n_states      = int(_mkv_sub.get("n_states", 8))
+
                 _gap_col   = "var(--green)" if _gap  > 0 else "var(--red)"
                 _bull_col  = "var(--green)" if _is_bull else "var(--red)"
                 _bull_str  = "BULLISH ▲"   if _is_bull else "BEARISH ▼"
                 _entry_col = "var(--green)" if _entry_ok else "var(--text-mute)"
                 _entry_str = "● ENTRY VALID" if _entry_ok else "○ NO ENTRY"
-                # Diagonal mean bar (0→1 scale)
+                _regime_col = (
+                    "var(--green)"  if _regime == "BULL" else
+                    "var(--red)"    if _regime == "BEAR" else
+                    "var(--amber)"
+                )
+                _align_str = "✓ ALIGNED" if _regime_align else ("✗ CONTRA" if _regime != "SIDEWAYS" else "~ SIDEWAYS")
+                _align_col = "var(--green)" if _regime_align else ("var(--red)" if _regime != "SIDEWAYS" else "var(--amber)")
                 _diag_pct  = int(_diag * 100)
                 _diag_col  = "var(--purple)" if _diag >= 0.87 else ("var(--amber)" if _diag >= 0.70 else "var(--red)")
+                _pi_bull_pct = int(_pi_bull * 100)
+                _pi_bear_pct = int(_pi_bear * 100)
+                _pi_edge_col = "var(--green)" if _pi_edge > 0 else "var(--red)"
+                _nstep_agree = "✓" if _j_star_n == _j_star_1 else "~"
+                _nstep_col   = "var(--green)" if _j_star_n == _j_star_1 else "var(--amber)"
+
+                # Build mini stationary distribution bar chart HTML
+                _pi_bars_html = ""
+                if _pi_dist and len(_pi_dist) > 0:
+                    _max_pi = max(_pi_dist) if max(_pi_dist) > 0 else 1.0
+                    _mid_idx = len(_pi_dist) // 2
+                    for _bi, _bv in enumerate(_pi_dist):
+                        _bar_h  = int((_bv / _max_pi) * 28)
+                        _bar_c  = "var(--green)" if _bi >= _mid_idx else "var(--red)"
+                        _active = "opacity:1" if _bi == _j_star else "opacity:0.5"
+                        _border = "border:1px solid var(--purple);" if _bi == _j_star else ""
+                        _pi_bars_html += (
+                            f'<div title="State {_bi}: π={_bv:.3f}" '
+                            f'style="display:inline-flex;flex-direction:column;align-items:center;'
+                            f'margin-right:2px;{_active}">'
+                            f'<div style="width:10px;height:{_bar_h}px;background:{_bar_c};'
+                            f'border-radius:2px 2px 0 0;{_border}"></div>'
+                            f'<div style="font-size:6px;color:var(--text-mute);margin-top:1px">{_bi}</div>'
+                            f'</div>'
+                        )
+
                 st.markdown(f"""
                 <div class="qt-section" style="margin-top:10px">MARKOV DIAGNOSTICS</div>
                 <div style="background:rgba(155,109,255,0.06);border:1px solid rgba(155,109,255,0.2);
                   border-radius:5px;padding:10px 12px;font-family:var(--mono);font-size:10px">
-                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;margin-bottom:8px">
+
+                  <!-- Row 1: Regime + Entry -->
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;margin-bottom:8px">
                     <div>
-                      <div style="color:var(--text-mute);font-size:8px;letter-spacing:.12em;margin-bottom:2px">DIAG MEAN τ̄</div>
-                      <div style="color:var(--purple);font-weight:600;font-size:13px">{_diag:.3f}</div>
-                      <div style="height:2px;background:var(--border);border-radius:1px;margin-top:3px">
-                        <div style="height:100%;width:{_diag_pct}%;background:{_diag_col};border-radius:1px"></div>
+                      <div style="color:var(--text-mute);font-size:8px;letter-spacing:.12em;margin-bottom:2px">MARKET REGIME (π)</div>
+                      <div style="color:{_regime_col};font-weight:700;font-size:13px">{_regime}</div>
+                      <div style="display:flex;gap:6px;margin-top:3px">
+                        <div style="height:3px;width:{_pi_bull_pct}%;background:var(--green);border-radius:2px"></div>
+                        <div style="height:3px;width:{_pi_bear_pct}%;background:var(--red);border-radius:2px"></div>
+                      </div>
+                      <div style="color:var(--text-mute);font-size:8px;margin-top:2px">
+                        bull={_pi_bull:.3f} bear={_pi_bear:.3f}
                       </div>
                     </div>
                     <div>
-                      <div style="color:var(--text-mute);font-size:8px;letter-spacing:.12em;margin-bottom:2px">REGIME</div>
-                      <div style="color:{_bull_col};font-weight:600;font-size:13px">{_bull_str}</div>
-                      <div style="color:var(--text-mute);font-size:9px">j={_state} → j*={_j_star}</div>
+                      <div style="color:var(--text-mute);font-size:8px;letter-spacing:.12em;margin-bottom:2px">REGIME ALIGNMENT</div>
+                      <div style="color:{_align_col};font-weight:700;font-size:13px">{_align_str}</div>
+                      <div style="color:var(--text-mute);font-size:8px;margin-top:2px">{_bull_str}</div>
                     </div>
+                  </div>
+
+                  <!-- Row 2: Core conditions -->
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;margin-bottom:8px">
                     <div>
-                      <div style="color:var(--text-mute);font-size:8px;letter-spacing:.12em;margin-bottom:2px">P̂ PREDICTED</div>
-                      <div style="color:var(--blue);font-weight:600">{_p_hat:.4f}</div>
-                    </div>
-                    <div>
-                      <div style="color:var(--text-mute);font-size:8px;letter-spacing:.12em;margin-bottom:2px">Q MARKET</div>
-                      <div style="color:var(--text-sec);font-weight:600">{_market_q:.4f}</div>
-                    </div>
-                    <div>
-                      <div style="color:var(--text-mute);font-size:8px;letter-spacing:.12em;margin-bottom:2px">GAP (P̂−Q) ε</div>
+                      <div style="color:var(--text-mute);font-size:8px;letter-spacing:.12em;margin-bottom:2px">GAP Δ(w) = P̂−Q</div>
                       <div style="color:{_gap_col};font-weight:600">{_gap:+.4f}</div>
+                      <div style="color:var(--text-mute);font-size:8px">P̂={_p_hat_1:.4f} Q={_market_q:.4f}</div>
                     </div>
                     <div>
                       <div style="color:var(--text-mute);font-size:8px;letter-spacing:.12em;margin-bottom:2px">PERSIST P[j*,j*]</div>
                       <div style="color:var(--amber);font-weight:600">{_persist:.4f}</div>
+                      <div style="color:var(--text-mute);font-size:8px">τ=0.87  j={_state}→j*={_j_star_1}</div>
                     </div>
                   </div>
+
+                  <!-- Row 3: N-step + π-edge -->
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;margin-bottom:8px">
+                    <div>
+                      <div style="color:var(--text-mute);font-size:8px;letter-spacing:.12em;margin-bottom:2px">3-STEP FORECAST</div>
+                      <div style="color:{_nstep_col};font-weight:600">{_nstep_agree} j*={_j_star_n}</div>
+                      <div style="color:var(--text-mute);font-size:8px">P̂(n)={_p_hat_n:.4f}  blend j*={_j_star}</div>
+                    </div>
+                    <div>
+                      <div style="color:var(--text-mute);font-size:8px;letter-spacing:.12em;margin-bottom:2px">π-EDGE STRUCT.</div>
+                      <div style="color:{_pi_edge_col};font-weight:600">{_pi_edge:+.4f}</div>
+                      <div style="color:var(--text-mute);font-size:8px">diag_mean={_diag:.3f}</div>
+                    </div>
+                  </div>
+
+                  <!-- Stationary distribution mini bar chart -->
+                  <div style="border-top:1px solid rgba(155,109,255,0.15);padding-top:7px;margin-bottom:7px">
+                    <div style="color:var(--text-mute);font-size:8px;letter-spacing:.12em;margin-bottom:4px">
+                      STATIONARY DISTRIBUTION π  (purple outline = predicted next state j*)
+                    </div>
+                    <div style="display:flex;align-items:flex-end;height:36px">
+                      {_pi_bars_html}
+                    </div>
+                  </div>
+
+                  <!-- Footer -->
                   <div style="border-top:1px solid rgba(155,109,255,0.15);padding-top:7px;
                     display:flex;justify-content:space-between;align-items:center">
                     <span style="color:{_entry_col};font-size:9px;letter-spacing:.08em;font-weight:600">{_entry_str}</span>
-                    <span style="color:var(--text-mute);font-size:9px">τ=0.87 · ε=0.05</span>
+                    <span style="color:var(--text-mute);font-size:9px">τ=0.87 · ε=0.05 · {_n_states} states</span>
                   </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -1778,75 +1852,4 @@ with panel_col:
             margin-bottom:10px;line-height:1.7;padding:8px 10px;
             background:var(--bg-surface);border-radius:4px;border-left:3px solid var(--blue)">
             <b style="color:var(--text-pri)">Signal alerts</b> fire automatically when the bot detects a
-            BUY/SELL signal, RSI extreme, or MA crossover on the chart.<br>
-            <b>Discord here</b> = one-way push via Webhook URL (no bot needed, instant setup).<br>
-            For interactive ✅/❌ trade confirmation → configure the Discord Bot in the ⚙ ACCOUNTS tab.
-            </div>''',
-            unsafe_allow_html=True
-        )
-        at1, at2, at3, at4 = st.tabs(["📧 EMAIL","💬 DISCORD WEBHOOK","📱 WHATSAPP","✈ TELEGRAM"])
-        with at1:
-            st.caption("Gmail app password: myaccount.google.com → Security → App Passwords")
-            em_s = st.text_input("From email", placeholder="you@gmail.com",      key="em_s")
-            em_p = st.text_input("App password", placeholder="xxxx xxxx xxxx xxxx", key="em_p", type="password")
-            em_r = st.text_input("To email",   placeholder="recipient@mail.com", key="em_r")
-            c1,c2 = st.columns(2)
-            if c1.button("Save Email",key="save_em",use_container_width=True):
-                _rebuild_engine(em_s=em_s,em_p=em_p,em_r=em_r); st.success("Email saved")
-            if c2.button("Test Email",key="test_em",use_container_width=True):
-                ok,msg = engine.test_channel("email"); (st.success if ok else st.error)(msg)
-        with at2:
-            st.caption("Server Settings → Integrations → Webhooks → New Webhook → Copy URL")
-            dc_url = st.text_input("Webhook URL", key="dc_url",
-                placeholder="https://discord.com/api/webhooks/1234567890/xxxxxxxxxxxx")
-            if dc_url and dc_url.startswith("https://discord.com/api/webhooks/"):
-                st.success("✅ Webhook URL looks valid")
-            elif dc_url and dc_url != "https://discord.com/api/webhooks/...":
-                st.error("❌ URL must start with https://discord.com/api/webhooks/")
-            c1,c2 = st.columns(2)
-            if c1.button("Save & Enable",key="save_dc",use_container_width=True,type="primary"):
-                if dc_url.startswith("https://discord.com/api/webhooks/"):
-                    _rebuild_engine(dc_url=dc_url)
-                    st.success("✅ Discord webhook saved! Signal alerts will now be sent.")
-                else:
-                    st.error("Enter a valid Discord webhook URL first")
-            if c2.button("Send Test",key="test_dc",use_container_width=True):
-                if dc_url.startswith("https://discord.com/api/webhooks/"):
-                    _rebuild_engine(dc_url=dc_url)
-                    ok,msg = engine.test_channel("discord")
-                    (st.success if ok else st.error)(msg)
-                else:
-                    st.error("Save a valid webhook URL first")
-        with at3:
-            st.caption("Setup: save +34 644 69 87 99 as 'CallMeBot', send 'I allow callmebot to send me messages', get your API key")
-            wa_ph = st.text_input("Phone (no + or spaces)", placeholder="9715XXXXXXXX", key="wa_ph")
-            wa_key_v = st.text_input("CallMeBot API Key", placeholder="1234567", key="wa_key")
-            c1,c2 = st.columns(2)
-            if c1.button("Save WhatsApp",key="save_wa",use_container_width=True):
-                _rebuild_engine(wa_phone=wa_ph,wa_key=wa_key_v); st.success("WhatsApp saved")
-            if c2.button("Test WhatsApp",key="test_wa",use_container_width=True):
-                _rebuild_engine(wa_phone=wa_ph,wa_key=wa_key_v)
-                ok,msg = engine.test_channel("whatsapp"); (st.success if ok else st.error)(msg)
-        with at4:
-            st.caption("@BotFather on Telegram: /newbot, copy token. @userinfobot: copy Chat ID.")
-            tg_t = st.text_input("Bot Token", placeholder="1234567:AABBcc...", key="tg_t")
-            tg_c = st.text_input("Chat ID",   placeholder="-100123456",        key="tg_c")
-            c1,c2 = st.columns(2)
-            if c1.button("Save Telegram",key="save_tg",use_container_width=True):
-                _rebuild_engine(tg_t=tg_t,tg_c=tg_c); st.success("Telegram saved")
-            if c2.button("Test Telegram",key="test_tg",use_container_width=True):
-                _rebuild_engine(tg_t=tg_t,tg_c=tg_c)
-                ok,msg = engine.test_channel("telegram"); (st.success if ok else st.error)(msg)
-
-# Broker panel
-render_broker_panel(df=df, rec=rec, ma_cross_result=st.session_state.ma_cross_result)
-
-# Auto-refresh: only rerun when full refresh interval has elapsed.
-# DO NOT use time.sleep(1)+rerun - that reruns the whole page every second.
-if st.session_state.auto_refresh:
-    elapsed   = time.time() - st.session_state.last_refresh
-    remaining = max(0, rsec - elapsed)
-    if remaining <= 0:
-        st.rerun()
-    else:
-        st.caption(f"Auto-refresh in {int(remaining)}s")
+            BUY

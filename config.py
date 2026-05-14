@@ -85,11 +85,15 @@ class StrategyConfig:
     ai_n_estimators: int      = 200
 
     # Markov Chains parameters
-    # Based on the mathematical framework from the PDF (March-April 2026)
-    markov_n_states: int   = 8     # number of discrete price states
-    markov_tau: float      = 0.87  # state persistence threshold -- eq.(2.3)
-    markov_eps: float      = 0.05  # arbitrage gap threshold epsilon -- eq.(2.2)
-    markov_lookback: int   = 200   # bars used to build the transition matrix
+    # Enhanced framework: core conditions + regime detection + n-step forecasting
+    markov_n_states: int          = 8      # discrete price states (N×N matrix)
+    markov_tau: float             = 0.87   # state persistence threshold — eq.(2.3)
+    markov_eps: float             = 0.05   # arbitrage gap threshold ε — eq.(2.2)
+    markov_lookback: int          = 200    # bars used to build the transition matrix
+    markov_n_step: int            = 3      # n-step ahead forecast horizon (P^n)
+    markov_n_step_weight: float   = 0.35   # blend weight for n-step vs 1-step
+    markov_regime_bull: float     = 0.55   # π(upper half) > this → BULL regime
+    markov_regime_bear: float     = 0.55   # π(lower half) > this → BEAR regime
 
 
 # --- SIGNAL THRESHOLDS -------------------------------------------------------
