@@ -5,10 +5,10 @@ Uses the `tradingview_ta` library (free, no API key required) and the
 `tvdatafeed` library (unofficial TradingView OHLCV history, free).
 
 Install (already added to requirements.txt):
-    pip install tradingview-ta tvdatafeed
+    pip install tradingview-ta tvdatafeed-enhanced
 
 TradingView TA:  Real-time technical analysis summaries (oscillators, MAs)
-tvdatafeed:      Historical OHLCV bars from TradingView charting engine
+tvdatafeed-enhanced: Historical OHLCV bars from TradingView charting engine
 
 Symbol format examples:
   BTCUSD (Crypto)  →  exchange="BINANCE"
@@ -115,10 +115,10 @@ def fetch_tradingview(
         RuntimeError if data fetch fails
     """
     try:
-        from tvdatafeed import TvDatafeed, Interval as TvInterval
+        from tvDatafeed import TvDatafeed, Interval as TvInterval
     except ImportError:
         raise ImportError(
-            "tvdatafeed not installed. Run: pip install tvdatafeed\n"
+            "tvdatafeed-enhanced not installed. Run: pip install tvdatafeed-enhanced\n"
             "Note: tvdatafeed is an unofficial library. Use at your own risk."
         )
 
