@@ -75,6 +75,11 @@ services:
 
   # ── FastAPI Backend ──────────────────────────────────────────
   api:
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     build:
       context: .
       dockerfile: docker/Dockerfile.api
@@ -95,12 +100,23 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 15s
+      start_period: 20s
     # api port NOT exposed externally — accessed via Nginx only
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
 
 
   # ── Bot Worker ───────────────────────────────────────────────
   worker:
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     build:
       context: .
       dockerfile: docker/Dockerfile.worker
@@ -120,6 +136,11 @@ services:
 
   # ── Streamlit Frontend ───────────────────────────────────────
   frontend:
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     build:
       context: .
       dockerfile: docker/Dockerfile.frontend
@@ -137,15 +158,21 @@ services:
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8501/_stcore/health"]
       interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 20s
+      timeout: 15s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 256M
 
 
   # ── Nginx ─────────────────────────────────────────────────────
   nginx:
     image: nginx:1.25-alpine
-    restart: unless-stopped
+    restart: always
     ports:
       - "80:80"
       - "443:443"

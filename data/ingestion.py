@@ -364,7 +364,7 @@ def load_data(
     Unified entry point: fetch raw OHLCV → add all indicators.
 
     Sources: "kraken" | "kucoin" | "yfinance" | "bitoasis" | "binance" |
-             "coingecko" | "twelvedata" | "csv" | "sample"
+             "coingecko" | "twelvedata" | "tradingview" | "csv" | "sample"
 
     Commodity symbols (XAUUSD, XAGUSD, USOIL, UKOIL, …) are automatically
     normalised to the correct yfinance futures ticker (GC=F, SI=F, CL=F, BZ=F)
@@ -428,6 +428,10 @@ def load_data(
         raw    = fetch_twelvedata(td_sym, interval=interval, period=period, api_key=key)
         # _normalise_df strips timezone info and ensures correct column names
         raw    = _normalise_df(raw, symbol)
+
+    elif source == "tradingview":
+        from data.tradingview_feed import fetch_tradingview
+        raw = fetch_tradingview(symbol, interval=interval, period=period)
 
     elif source == "csv":
         if not csv_path:

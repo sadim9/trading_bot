@@ -1,0 +1,126 @@
+//@version=6
+// ============================================================================
+//  URA INDICATORS — Companion sub-pane for URA-STRAT v10
+//  Pine Script v6
+//
+//  HOW TO USE:
+//  1. Pine Editor → paste → Add to chart → moves to new pane automatically
+//  2. To sync regime background: in indicator Settings → Source, change
+//     "Regime Code" from "close" to "URA-STRAT: Regime Code (sync)"
+//
+//  v10 changes:
+//  • Default RSI thresholds updated to match strategy (40 / 60)
+//  • ADX weak trend default raised to 15 (matches strategy v10)
+//  • EMA50 slope histogram added to sub-pane for quick reference
+//  • DI cross markers size bumped for clarity
+// ============================================================================
+
+indicator(title="URA Indicators (RSI + ADX)", shorttitle="URA-IND", overlay=false, max_labels_count=100)
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+
+grpRSI = "RSI SETTINGS"
+rsiLen      = input.int(14, "RSI Period",             group=grpRSI, minval=2)
+rsiLongThr  = input.int(40, "RSI Long threshold (>)", group=grpRSI, minval=20, maxval=70, tooltip="Keep in sync with strategy. Default 40 (matches URA-STRAT v10).")
+rsiShortThr = input.int(60, "RSI Short threshold (<)",group=grpRSI, minval=30, maxval=80, tooltip="Keep in sync with strategy. Default 60 (matches URA-STRAT v10).")
+
+grpADX = "ADX / DMI SETTINGS"
+adxLen         = input.int(14, "ADX Period",            group=grpADX, minval=5)
+adxStrongTrend = input.int(20, "ADX Strong Trend line", group=grpADX, minval=10)
+adxWeakTrend   = input.int(15, "ADX Weak Trend line",   group=grpADX, minval=5, tooltip="Raised to 15 in v10 (was 10). ADX < 15 on M5 is typically noise.")
+
+grpSlope = "EMA50 SLOPE DISPLAY"
+showSlope   = input.bool(true,    "Show EMA50 slope histogram", group=grpSlope, tooltip="Plots EMA50 slope (normalised by ATR) so you can see when the slope gate is blocking entries.")
+slopeSrcLen = input.int(5,        "Slope lookback bars",        group=grpSlope, minval=2, tooltip="Must match the strategy 'EMA50 slope lookback bars' setting.")
+slopeMagPct = input.float(0.02,   "Min slope magnitude (% of EMA50)", group=grpSlope, step=0.005, tooltip="Must match the strategy 'EMA50 min slope magnitude' setting.")
+slopeScale  = input.float(500.0,  "Slope display scale",        group=grpSlope, step=50.0, tooltip="Scales the histogram for visibility. Adjust if too flat or clipping.")
+
+grpSync = "BACKGROUND SYNC"
+regimeSource = input.source(close, "Regime Code (set to URA-STRAT: Regime Code (sync))", group=grpSync)
+showSyncBg   = input.bool(true, "Show synced regime background", group=grpSync)
+
+grpDisp = "DISPLAY"
+showRsi = input.bool(true, "Show RSI",     group=grpDisp)
+showAdx = input.bool(true, "Show ADX/DMI", group=grpDisp)
+
+// ============================================================================
+// CALCULATIONS
+// ============================================================================
+
+rsiVal = ta.rsi(close, rsiLen)
+[diPlus, diMinus, adxVal] = ta.dmi(adxLen, adxLen)
+
+// EMA50 slope
+ema50Val       = ta.ema(close, 50)
+ema50SlopeRaw  = ema50Val - ema50Val[slopeSrcLen]
+slopeMagThresh = ema50Val * slopeMagPct / 100.0
+ema50Rising    = ema50SlopeRaw >  slopeMagThresh
+ema50Falling   = ema50SlopeRaw < -slopeMagThresh
+atrRef         = ta.atr(14)
+slopeNorm      = atrRef > 0 ? (ema50SlopeRaw / atrRef) * slopeScale : 0.0
+
+// ============================================================================
+// BACKGROUND — synced to regime code exported from URA-STRAT main strategy
+// Regime codes: 1=STRONG_BULL 2=STRONG_BEAR 3=PULLBACK_BULL 4=PULLBACK_BEAR
+//               5=WEAK_BULL   6=WEAK_BEAR   7=RANGE  8=VOLATILE  9=EUPHORIA
+// ============================================================================
+
+regimeCode = math.round(regimeSource)
+
+syncBgCol = regimeCode == 1 ? color.new(#00E676, 95) : regimeCode == 2 ? color.new(#FF5252, 95) : regimeCode == 3 ? color.new(#00E676, 90) : regimeCode == 4 ? color.new(#FF5252, 90) : regimeCode == 5 ? color.new(#00E676, 97) : regimeCode == 6 ? color.new(#FF5252, 97) : regimeCode == 8 ? color.new(#FF9800, 94) : regimeCode == 9 ? color.new(#9C27B0, 92) : color.new(#787B86, 97)
+
+bgcolor(showSyncBg ? syncBgCol : na, title="Regime Background (synced)")
+
+// ============================================================================
+// RSI PLOTS
+// ============================================================================
+
+rsiCol = rsiVal > 70 ? color.new(#FF5252, 0) : rsiVal < 30 ? color.new(#00E676, 0) : rsiVal > rsiLongThr ? color.new(#9B59B6, 20) : color.new(#9B59B6, 50)
+
+plot(showRsi ? rsiVal      : na, "RSI",                color=rsiCol,                         linewidth=2)
+plot(showRsi ? rsiLongThr  : na, "RSI Long threshold",  color=color.new(#00E676, 40), linewidth=1, style=plot.style_line)
+plot(showRsi ? rsiShortThr : na, "RSI Short threshold", color=color.new(#FF5252, 40), linewidth=1, style=plot.style_line)
+
+hline(70, "Overbought 70", color=color.new(#FF5252, 70), linestyle=hline.style_dotted)
+hline(50, "Midline 50",    color=color.new(#787B86, 70), linestyle=hline.style_solid)
+hline(30, "Oversold 30",   color=color.new(#00E676, 70), linestyle=hline.style_dotted)
+
+// ============================================================================
+// ADX / DMI PLOTS
+// ============================================================================
+
+adxCol = adxVal >= adxStrongTrend ? color.new(#FFC107, 0) : adxVal >= adxWeakTrend ? color.new(#FFC107, 40) : color.new(#FFC107, 70)
+
+plot(showAdx ? adxVal         : na, "ADX (trend strength)",  color=adxCol,                         linewidth=2)
+plot(showAdx ? diPlus         : na, "DI+ (bull pressure)",   color=color.new(#00E676, 30), linewidth=1)
+plot(showAdx ? diMinus        : na, "DI- (bear pressure)",   color=color.new(#FF5252, 30), linewidth=1)
+plot(showAdx ? adxStrongTrend : na, "ADX Strong Trend line", color=color.new(#00E676, 50), linewidth=1, style=plot.style_line)
+plot(showAdx ? adxWeakTrend   : na, "ADX Weak Trend line",   color=color.new(#FFC107, 50), linewidth=1, style=plot.style_line)
+
+hline(0, "Zero line", color=color.new(#787B86, 80), linestyle=hline.style_solid)
+
+// ============================================================================
+// DI CROSS MARKERS
+// ============================================================================
+
+diBullCross = ta.crossover(diPlus,  diMinus)
+diBearCross = ta.crossover(diMinus, diPlus)
+
+plotshape(showAdx and diBullCross, title="DI Bull Cross", style=shape.triangleup,   location=location.bottom, color=color.new(#00E676, 0), size=size.small)
+plotshape(showAdx and diBearCross, title="DI Bear Cross", style=shape.triangledown, location=location.top,    color=color.new(#FF5252, 0), size=size.small)
+
+// ============================================================================
+// EMA50 SLOPE HISTOGRAM (v10 new)
+// Green = rising (slope OK for longs), Red = falling (slope OK for shorts),
+// Yellow = flat (within magnitude threshold — no slope block in either direction)
+// ============================================================================
+
+slopeCol = ema50Rising ? color.new(#00E676, 30) : ema50Falling ? color.new(#FF5252, 30) : color.new(#FFC107, 50)
+
+plot(showSlope ? slopeNorm : na, "EMA50 Slope", color=slopeCol, linewidth=1, style=plot.style_histogram)
+
+// ============================================================================
+// END
+// ============================================================================

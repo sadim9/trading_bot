@@ -1,0 +1,56 @@
+# ── Secrets / Environment ──────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+secrets/
+
+# ── Python ──────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── Virtual environments ─────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Jupyter ──────────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── Data / Logs ──────────────────────────────────────────────────
+logs/*.csv
+logs/*.log
+logs/user_settings.json
+*.log
+data/cache/
+.cache/
+
+# ── Docker ───────────────────────────────────────────────────────
+# docker-compose.override.yml
+
+# ── IDE ───────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Testing ───────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Database ──────────────────────────────────────────────────────
+*.sqlite3
+*.db

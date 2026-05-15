@@ -26,6 +26,7 @@ import os
 import time
 import streamlit as st
 from datetime import datetime
+from dashboard.settings_store import save_settings, set_setting, get_tz_offset, tz_label
 
 
 # ── CSS for the account panel ─────────────────────────────────────────────────
@@ -172,6 +173,7 @@ def render_account_panel():
         CONFIG.data.ui_default_source   = def_src
         CONFIG.data.ui_default_interval = def_ivl
         CONFIG.data.ui_default_period   = def_per
+        save_settings()  # persist to disk
         st.success(
             f"✅ Defaults saved: {def_sym} · {def_src} · {def_ivl} · {def_per}  "
             f"(click ⟳ LOAD on the chart to apply immediately)"
@@ -506,7 +508,10 @@ def render_account_panel():
         wa_phone = c1.text_input("Phone (international, no +)", placeholder="9715XXXXXXXX", key="wa_ph_acct")
         wa_key   = c2.text_input("CallMeBot API Key",           placeholder="1234567",      key="wa_key_acct")
         if st.button("Save WhatsApp", key="wa_save_acct"):
+            st.session_state["_whatsapp_phone"] = wa_phone
+            st.session_state["_whatsapp_api_key"] = wa_key
             _rebuild_alerts(wa_phone=wa_phone, wa_key=wa_key)
+            save_settings()
             st.success("WhatsApp saved! Alerts will be sent to your number.")
 
     with at2:
@@ -522,7 +527,10 @@ def render_account_panel():
         em_pass = c2.text_input("App Password",    placeholder="xxxx xxxx xxxx xxxx", type="password", key="em_pass_acct")
         em_to   = c3.text_input("To (recipient)",  placeholder="alerts@example.com", key="em_to_acct")
         if st.button("Save Email", key="em_save_acct"):
+            st.session_state["_email_sender"] = em_from
+            st.session_state["_email_recipient"] = em_to
             _rebuild_alerts(em_s=em_from, em_p=em_pass, em_r=em_to)
+            save_settings()
             st.success("Email alerts saved!")
 
     with at3:
@@ -534,7 +542,10 @@ def render_account_panel():
         tg_tok = c1.text_input("Bot Token",  placeholder="1234567:AABBcc...", key="tg_tok_acct")
         tg_cid = c2.text_input("Chat ID",    placeholder="-100123456",        key="tg_cid_acct")
         if st.button("Save Telegram", key="tg_save_acct"):
+            st.session_state["_telegram_bot_token"] = tg_tok
+            st.session_state["_telegram_chat_id"] = tg_cid
             _rebuild_alerts(tg_t=tg_tok, tg_c=tg_cid)
+            save_settings()
             st.success("Telegram alerts saved!")
 
     st.markdown('</div>', unsafe_allow_html=True)
@@ -576,7 +587,7 @@ def render_account_panel():
         if st.button("Switch to Light", key="_acct_light_btn",
                      type="secondary" if _light_active else "primary",
                      use_container_width=True, disabled=_light_active):
-            st.session_state["theme"] = "light"
+            set_setting("theme", "light")  # persist + set session state
             st.rerun()
 
     with _theme_col2:
@@ -599,8 +610,76 @@ def render_account_panel():
         if st.button("Switch to Dark", key="_acct_dark_btn",
                      type="secondary" if _dark_active else "primary",
                      use_container_width=True, disabled=_dark_active):
-            st.session_state["theme"] = "dark"
+            set_setting("theme", "dark")  # persist + set session state
             st.rerun()
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  TIMEZONE SETTINGS
+    # ══════════════════════════════════════════════════════════════════════
+    st.markdown('<div class="acct-section">', unsafe_allow_html=True)
+    st.markdown('<div class="acct-title">🕐 TIMEZONE SETTINGS</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'''<div class="acct-sub">
+        Your DigitalOcean server is in Germany (UTC+1/+2 CET/CEST).
+        Set your local UTC offset so all timestamps show in your local time.
+        Current setting: <b style="color:var(--amber)">{tz_label()}</b>
+        </div>''',
+        unsafe_allow_html=True,
+    )
+
+    _tz_presets = {
+        "UTC+0 (London, Dublin)": 0,
+        "UTC+1 (West Africa, Lagos)": 1,
+        "UTC+2 (Germany, Cairo)": 2,
+        "UTC+3 (Qatar, Saudi Arabia, UAE, Kuwait, Moscow)": 3,
+        "UTC+4 (UAE, Baku)": 4,
+        "UTC+5 (Pakistan)": 5,
+        "UTC+5.5 (India)": 5.5,
+        "UTC+6 (Bangladesh)": 6,
+        "UTC+7 (Bangkok, Jakarta)": 7,
+        "UTC+8 (Singapore, China, HK)": 8,
+        "UTC+9 (Japan, Korea)": 9,
+        "UTC+10 (Sydney, AEST)": 10,
+        "UTC-5 (US Eastern)": -5,
+        "UTC-6 (US Central)": -6,
+        "UTC-7 (US Mountain)": -7,
+        "UTC-8 (US Pacific)": -8,
+    }
+    _cur_offset = get_tz_offset()
+    _preset_labels = list(_tz_presets.keys())
+    _preset_values = list(_tz_presets.values())
+    # Find closest preset
+    _closest_idx = min(range(len(_preset_values)), key=lambda i: abs(_preset_values[i] - _cur_offset))
+
+    _tz_col1, _tz_col2 = st.columns([3, 1])
+    _selected_tz = _tz_col1.selectbox(
+        "Local Timezone",
+        _preset_labels,
+        index=_closest_idx,
+        key="tz_preset_select",
+        help="Select your local timezone. All timestamps in the dashboard will use this offset.",
+    )
+    _custom_offset = _tz_col2.number_input(
+        "Custom offset (h)",
+        min_value=-12.0, max_value=14.0,
+        value=float(_cur_offset),
+        step=0.5, format="%.1f",
+        key="tz_custom_offset",
+        help="Fine-tune with a custom decimal offset (e.g. 5.5 for India UTC+5:30)",
+    )
+
+    if st.button("💾 Save Timezone", type="primary", key="save_tz", use_container_width=False):
+        # Custom offset takes priority if it differs from the preset
+        _chosen_offset = _tz_presets[_selected_tz]
+        if abs(_custom_offset - _chosen_offset) > 0.1:
+            _chosen_offset = _custom_offset
+        set_setting("tz_offset_hours", _chosen_offset)
+        from dashboard.settings_store import tz_label as _tz_label_fn
+        st.success(f"✅ Timezone set to {_tz_label_fn()} — all timestamps now show your local time.")
+        st.rerun()
 
     st.markdown('</div>', unsafe_allow_html=True)
 

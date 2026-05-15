@@ -577,6 +577,40 @@ def build_chart(
             fig.add_hline(y=lvl, row=3, col=1,
                           line=dict(color=col, width=0.8, dash="dot"))
 
+    # ── ROW 3.5: Volume Profile (horizontal bars on price axis) ────────────
+    # Group volume into price buckets and show as horizontal bars overlaid on price
+    try:
+        _vp_n_bins = 20
+        _vp_close  = df["Close"].values
+        _vp_vol    = df["Volume"].values.astype(float)
+        _vp_bins   = np.linspace(_vp_close.min(), _vp_close.max(), _vp_n_bins + 1)
+        _vp_mids   = (_vp_bins[:-1] + _vp_bins[1:]) / 2
+        _vp_vols   = np.zeros(_vp_n_bins)
+        for _px_v, _vol_v in zip(_vp_close, _vp_vol):
+            _bin_idx = np.searchsorted(_vp_bins, _px_v, side="right") - 1
+            _bin_idx = int(np.clip(_bin_idx, 0, _vp_n_bins - 1))
+            _vp_vols[_bin_idx] += _vol_v
+        # Normalise to fraction of price range for overlay
+        _vp_max  = _vp_vols.max()
+        _vp_norm = (_vp_vols / _vp_max) if _vp_max > 0 else _vp_vols
+        _vp_width = (df.index[-1] - df.index[0]) * 0.08  # 8% of x range
+        _x_right  = df.index[-1]
+        for _mid, _norm in zip(_vp_mids, _vp_norm):
+            if _norm > 0.02:  # skip tiny bars
+                _is_upper = _mid >= _vp_mids[len(_vp_mids)//2]
+                _vp_color = "rgba(38,166,154,0.25)" if _is_upper else "rgba(239,83,80,0.25)"
+                fig.add_shape(
+                    type="rect",
+                    x0=_x_right, x1=_x_right + _vp_width * _norm,
+                    y0=_mid - (_vp_bins[1] - _vp_bins[0]) / 2,
+                    y1=_mid + (_vp_bins[1] - _vp_bins[0]) / 2,
+                    fillcolor=_vp_color,
+                    line=dict(width=0),
+                    row=1, col=1,
+                )
+    except Exception:
+        pass  # Volume profile is optional
+
     # ── ROW 4: MACD with divergence colouring ────────────────────────────────
     if all(c in df.columns for c in ["macd", "macd_signal", "macd_hist"]):
         hist   = df["macd_hist"]
@@ -642,14 +676,32 @@ def build_chart(
         ),
         dragmode="pan",
         xaxis_rangeslider_visible=False,
-        height=820,
+        height=860,
         # uirevision: keeps zoom/pan state across Streamlit reruns.
         # Only reset when the symbol changes.
         uirevision=f"chart_{symbol}",
         transition=dict(duration=200, easing="cubic-in-out"),
-        # Spike lines for crosshair effect
-        xaxis=dict(showspikes=True, spikemode="across", spikesnap="cursor",
-                   spikecolor=T["text_dim"], spikethickness=1, spikedash="dot"),
+        # Range selector buttons (TradingView-style time range buttons)
+        xaxis=dict(
+            rangeselector=dict(
+                buttons=[
+                    dict(count=1, label="1H",  step="hour",  stepmode="backward"),
+                    dict(count=4, label="4H",  step="hour",  stepmode="backward"),
+                    dict(count=1, label="1D",  step="day",   stepmode="backward"),
+                    dict(count=7, label="1W",  step="day",   stepmode="backward"),
+                    dict(count=1, label="1M",  step="month", stepmode="backward"),
+                    dict(count=3, label="3M",  step="month", stepmode="backward"),
+                    dict(step="all", label="ALL"),
+                ],
+                bgcolor=T["bg_panel"],
+                activecolor=T["grid"],
+                font=dict(color=T["text"], size=9, family="JetBrains Mono, monospace"),
+                x=0.0, y=1.01, xanchor="left",
+            ),
+            showspikes=True, spikemode="across", spikesnap="cursor",
+            spikecolor=T["text_dim"], spikethickness=1, spikedash="dot",
+        ),
+        # Spike lines
         yaxis=dict(showspikes=True, spikemode="toaxis", spikesnap="cursor",
                    spikecolor=T["text_dim"], spikethickness=1, spikedash="dot"),
     )

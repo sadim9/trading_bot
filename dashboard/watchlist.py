@@ -56,10 +56,22 @@ def _scan_one(symbol: str, interval: str, source: str) -> Optional[dict]:
         from strategies.ma_cross import MACrossStrategy
         from config import CONFIG
 
-        df = load_data(symbol, interval=interval, period="60d", source=source,
-                       crypto_limit=300)
+        # Try primary source; fall back to yfinance if it fails
+        df = None
+        last_err = ""
+        for _src in [source, "yfinance", "sample"]:
+            try:
+                df = load_data(symbol, interval=interval, period="60d", source=_src,
+                               crypto_limit=300)
+                if df is not None and len(df) >= 5:
+                    break
+            except Exception as _e:
+                last_err = str(_e)
+                df = None
+                continue
+
         if df is None or len(df) < 5:
-            return None
+            return {"symbol": symbol, "error": f"No data ({last_err[:60]})", "signal": "?", "price": 0, "score": 0}
 
         close    = float(df["Close"].iloc[-1])
         prev     = float(df["Close"].iloc[-2])
@@ -138,7 +150,7 @@ def scan_watchlist(
             r = future.result()
             if r:
                 results.append(r)
-    order = {"BUY": 0, "SELL": 1, "HOLD": 2, "?": 3}
+    order = {"BUY": 0, "SELL": 1, "HOLD": 2, "?": 3, None: 4}
     results.sort(key=lambda x: (order.get(x.get("signal", "?"), 3),
                                  -abs(x.get("score", 0))))
     return results
@@ -168,14 +180,13 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
         placeholder="AAPL, MSFT, NVDA ...",
     )
 
+    _wl_sources = ["yfinance", "kraken", "kucoin", "tradingview", "bitoasis", "coingecko", "sample"]
+    _wl_cur_src = st.session_state.get("wl_source", main_source)
+    _wl_src_idx = _wl_sources.index(_wl_cur_src) if _wl_cur_src in _wl_sources else 0
     wl_source = c3.selectbox(
         "Source",
-        ["yfinance", "kraken", "kucoin", "bitoasis", "sample"],
-        index=["yfinance", "kraken", "kucoin", "bitoasis", "sample"].index(
-            st.session_state.get("wl_source", main_source)
-            if st.session_state.get("wl_source", main_source) in
-            ["yfinance", "kraken", "kucoin", "bitoasis", "sample"] else "yfinance"
-        ),
+        _wl_sources,
+        index=_wl_src_idx,
         key="wl_source",
         label_visibility="collapsed",
     )

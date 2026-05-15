@@ -31,7 +31,8 @@ from slowapi.util import get_remote_address
 from server.config import get_settings
 from server.db.database import init_db
 from server.api import (
-    auth_router, trades_router, signals_router, users_router, ws_router
+    auth_router, trades_router, signals_router, users_router, ws_router,
+    settings_router
 )
 
 settings = get_settings()
@@ -102,14 +103,8 @@ async def security_headers(request: Request, call_next):
     response.headers["X-XSS-Protection"]        = "1; mode=block"
     response.headers["Referrer-Policy"]         = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"]      = "geolocation=(), microphone=(), camera=()"
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; "
-        "script-src 'self'; "
-        "style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data:; "
-        "connect-src 'self' wss:; "
-        "frame-ancestors 'none';"
-    )
+    # CSP is set by Nginx for the frontend; API only sets frame-ancestors
+    response.headers["Content-Security-Policy"] = "frame-ancestors 'none';"
     # Timing header (useful for debugging, remove in prod if desired)
     elapsed = (time.perf_counter() - start_time) * 1000
     response.headers["X-Process-Time-Ms"] = f"{elapsed:.1f}"
@@ -125,6 +120,7 @@ app.include_router(trades_router,  prefix=API_PREFIX)
 app.include_router(signals_router, prefix=API_PREFIX)
 app.include_router(users_router,   prefix=API_PREFIX)
 app.include_router(ws_router)            # WebSocket at /ws (no prefix)
+app.include_router(settings_router, prefix=API_PREFIX)
 
 
 # ── Health / Readiness Probes ─────────────────────────────────────────────────

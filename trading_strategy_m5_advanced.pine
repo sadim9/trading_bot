@@ -1,0 +1,633 @@
+// ============================================================================
+// Advanced M5 Multi-Session Trading Strategy | Pine Script v6
+// ============================================================================
+// A production-ready strategy combining SuperTrend, EMA 200/50, and RSI
+// for high-probability pullback trades during London and New York sessions.
+//
+// Designed for FX pairs and commodities (XAUUSD).
+// Educational code - not financial advice.
+// ============================================================================
+
+//@version=6
+strategy(
+    title="M5 Multi-Session SuperTrend EMA RSI Strategy",
+    shorttitle="M5 STRA",
+    overlay=true,
+    default_qty_type=strategy.percent_of_equity,
+    default_qty_value=1,
+    initial_capital=10000,
+    process_orders_on_close=true,
+    max_boxes_count=500,
+    max_lines_count=500)
+
+// ============================================================================
+// SECTION 1: INPUT PARAMETERS - ALL CONFIGURABLE
+// ============================================================================
+
+// --- Trading Sessions (Disabled for Stocks) ---
+grpSession = "SESSION SETTINGS"
+enableLondon = input.bool(true, "Enable London Session (08:00-16:00 UTC) - Disable for Stocks", group=grpSession)
+londonStart = input.string("08:00", "London Start Time", group=grpSession)
+londonEnd = input.string("16:00", "London End Time", group=grpSession)
+
+enableNewYork = input.bool(true, "Enable New York Session (13:00-21:00 UTC) - Disable for Stocks", group=grpSession)
+nyStart = input.string("13:00", "NY Start Time", group=grpSession)
+nyEnd = input.string("21:00", "NY End Time", group=grpSession)
+
+// For stocks, allow 24/7 trading by disabling session filter
+enableSessionFilter = input.bool(true, "Enable Session Time Filter? (Disable for 24/7 like Stocks)", group=grpSession)
+
+// --- SuperTrend Indicator ---
+grpST = "SUPERTREND"
+stPeriod = input.int(10, "SuperTrend Period", minval=5, maxval=50, group=grpST)
+stMultiplier = input.float(3.0, "SuperTrend Multiplier", minval=0.5, maxval=10.0, step=0.1, group=grpST)
+
+// --- EMA Settings ---
+grpEMA = "EMA SETTINGS"
+ema200Len = input.int(200, "EMA 200 Length", minval=10, maxval=500, group=grpEMA)
+ema50Len = input.int(50, "EMA 50 Length", minval=10, maxval=200, group=grpEMA)
+
+// --- Pullback Configuration ---
+grpPullback = "PULLBACK DETECTION"
+pullbackMode = input.string("percent", "Pullback Proximity Mode", options=["percent", "pips"], group=grpPullback)
+pullbackPercent = input.float(0.5, "Pullback % from EMA 50", minval=0.1, maxval=5.0, group=grpPullback)
+pullbackPips = input.float(10.0, "Pullback Pips from EMA 50 (if mode=pips)", minval=1.0, maxval=100.0, group=grpPullback)
+maxDistFromEma = input.float(2.0, "Max Distance % from EMA 50 to Entry (Chasing Filter)", minval=0.5, maxval=10.0, group=grpPullback)
+
+// --- RSI Settings ---
+grpRSI = "RSI SETTINGS"
+rsiPeriod = input.int(14, "RSI Period", minval=5, maxval=50, group=grpRSI)
+rsiLong = input.int(50, "RSI Threshold for Long (>)", minval=20, maxval=80, group=grpRSI)
+rsiShort = input.int(50, "RSI Threshold for Short (<)", minval=20, maxval=80, group=grpRSI)
+
+// --- Symbol Type Detection ---
+grpSymbol = "SYMBOL SETTINGS"
+isStock = input.bool(false, "Is this a Stock? (not Forex/Commodity)", group=grpSymbol)
+pipSize = input.float(0.0001, "Pip/Tick Size (0.0001 for Forex, 0.01 for Gold, 1.0 for Stocks)", minval=0.00001, maxval=1.0, step=0.00001, group=grpSymbol)
+
+// --- Stop Loss Settings ---
+grpSL = "STOP LOSS"
+slMode = input.string("swing", "Stop Loss Mode", options=["swing", "fixed"], group=grpSL)
+swingLookback = input.int(20, "Swing High/Low Lookback Periods", minval=5, maxval=100, group=grpSL)
+fixedSlPips = input.float(12.0, "Fixed SL Distance (pips/ticks)", minval=1.0, maxval=100.0, group=grpSL)
+fixedSlGold = input.float(15.0, "Fixed SL Distance (alternative)", minval=1.0, maxval=100.0, group=grpSL)
+
+// --- Take Profit Settings ---
+grpTP = "TAKE PROFIT"
+tpMode = input.string("fixed_rr", "TP Exit Mode", options=["fixed_rr", "trailing_st"], group=grpTP)
+riskRewardRatio = input.float(2.0, "Risk-Reward Ratio (1:X)", minval=0.5, maxval=5.0, step=0.1, group=grpTP)
+
+// --- Position Sizing ---
+grpPosition = "POSITION SIZING"
+posMode = input.string("risk_percent", "Position Sizing Mode", options=["risk_percent", "fixed_contracts"], group=grpPosition)
+riskPercent = input.float(2.0, "Risk per Trade (% of Equity)", minval=0.1, maxval=10.0, step=0.1, group=grpPosition)
+fixedContracts = input.float(1.0, "Fixed Number of Contracts", minval=0.01, maxval=100.0, step=0.01, group=grpPosition)
+
+// --- Trade Limits ---
+grpLimits = "TRADE LIMITS"
+maxConcurrentTrades = input.int(1, "Max Concurrent Trades", minval=1, maxval=10, group=grpLimits)
+maxDailyTrades = input.int(5, "Max Daily Trades", minval=1, maxval=20, group=grpLimits)
+onlyOneDirection = input.bool(true, "Allow Only One Direction at a Time", group=grpLimits)
+
+// --- Volatility & Filters ---
+grpFilter = "ADVANCED FILTERS"
+enableAtrFilter = input.bool(true, "Enable ATR Volatility Filter", group=grpFilter)
+atrPeriod = input.int(14, "ATR Period", minval=5, maxval=50, group=grpFilter)
+atrThreshold = input.float(0.0015, "Min ATR Threshold (as % of Price)", minval=0.0001, maxval=0.01, group=grpFilter)
+enableMarketStructure = input.bool(true, "Enable Market Structure Filter", group=grpFilter)
+marketStructureLookback = input.int(20, "Market Structure Lookback", minval=5, maxval=50, group=grpFilter)
+
+// --- Backtest & Realism ---
+grpBacktest = "BACKTEST SETTINGS"
+commission = input.float(0.001, "Commission (as % of trade)", minval=0.0, maxval=0.1, group=grpBacktest)
+slippage = input.float(0.5, "Slippage (in pips)", minval=0.0, maxval=10.0, group=grpBacktest)
+enableDebug = input.bool(false, "Enable Debug Mode (plots signals)", group=grpBacktest)
+ignoreSessionForTesting = input.bool(false, "TESTING: Ignore session filter (see arrows anytime)", group=grpBacktest)
+
+// ============================================================================
+// SECTION 2: CORE CALCULATIONS & INDICATORS
+// ============================================================================
+
+// Calculate SuperTrend
+calcSuperTrend(period, mult) =>
+    hlAvg = (high + low) / 2
+    atrVal = ta.atr(period)
+    basicUpper = hlAvg + mult * atrVal
+    basicLower = hlAvg - mult * atrVal
+
+    finalUpper = basicUpper
+    finalLower = basicLower
+
+    if na(finalUpper[1])
+        finalUpper := basicUpper
+    else
+        finalUpper := basicUpper < finalUpper[1] or close[1] > finalUpper[1] ? basicUpper : finalUpper[1]
+
+    if na(finalLower[1])
+        finalLower := basicLower
+    else
+        finalLower := basicLower > finalLower[1] or close[1] < finalLower[1] ? basicLower : finalLower[1]
+
+    [finalUpper, finalLower]
+
+[stUpper, stLower] = calcSuperTrend(stPeriod, stMultiplier)
+
+// EMA Calculations
+ema200 = ta.ema(close, ema200Len)
+ema50 = ta.ema(close, ema50Len)
+
+// RSI Calculation
+rsi = ta.rsi(close, rsiPeriod)
+
+// ATR for Volatility Filter
+atr = ta.atr(atrPeriod)
+atrPercent = (atr / close) * 100
+
+// Swing High/Low Detection (for SL)
+swingHigh = ta.highest(high, swingLookback)
+swingLow = ta.lowest(low, swingLookback)
+
+// ============================================================================
+// SECTION 3: SESSION & TIME FILTERS
+// ============================================================================
+
+timeInSession(startStr, endStr) =>
+    currentHour = hour
+    currentMinute = minute
+    currentTime = currentHour * 100 + currentMinute
+
+    startParts = str.split(startStr, ":")
+    startHour = str.tonumber(startParts.get(0))
+    startMinute = str.tonumber(startParts.get(1))
+    startTime = startHour * 100 + startMinute
+
+    endParts = str.split(endStr, ":")
+    endHour = str.tonumber(endParts.get(0))
+    endMinute = str.tonumber(endParts.get(1))
+    endTime = endHour * 100 + endMinute
+
+    startTime < endTime ? (currentTime >= startTime and currentTime < endTime) : (currentTime >= startTime or currentTime < endTime)
+
+londonActive = enableLondon ? timeInSession(londonStart, londonEnd) : false
+nyActive = enableNewYork ? timeInSession(nyStart, nyEnd) : false
+inTradingSession = enableSessionFilter ? (londonActive or nyActive) : true
+
+// ============================================================================
+// SECTION 4: MARKET STRUCTURE & VOLATILITY FILTERS
+// ============================================================================
+
+// Market Structure: Higher Highs for Longs, Lower Lows for Shorts
+hasHigherHighs = ta.highest(high, marketStructureLookback) == high
+hasLowerLows = ta.lowest(low, marketStructureLookback) == low
+
+// Volatility Filter
+volatilityOk = not enableAtrFilter or (atrPercent >= atrThreshold)
+
+// ============================================================================
+// SECTION 5: ENTRY SIGNAL LOGIC
+// ============================================================================
+
+// SuperTrend Color Flip Detection
+stBullish = close > stLower
+stBearish = close < stUpper
+stFlipBull = stBullish and not stBullish[1]
+stFlipBear = stBearish and not stBearish[1]
+
+// Pullback Detection: Distance from EMA 50
+distFromEma50Pct = math.abs(close - ema50) / ema50 * 100
+distFromEma50Pips = math.abs(close - ema50) / pipSize
+
+pullbackThresholdPct = pullbackPercent
+pullbackThresholdPips = pullbackPips
+
+nearEma50 = pullbackMode == "percent" ? distFromEma50Pct <= pullbackThresholdPct : distFromEma50Pips <= pullbackThresholdPips
+
+maxDistThresholdPct = maxDistFromEma / 100
+chasingFilter = distFromEma50Pct <= maxDistFromEma
+
+// Session check - can be overridden for testing
+sessionOk = ignoreSessionForTesting ? true : inTradingSession
+
+// LONG ENTRY CONDITIONS
+longSignal = sessionOk and
+             close > ema200 and
+             nearEma50 and
+             chasingFilter and
+             stFlipBull and
+             close > stLower and
+             rsi > rsiLong and
+             volatilityOk and
+             (not enableMarketStructure or hasHigherHighs)
+
+// SHORT ENTRY CONDITIONS
+shortSignal = sessionOk and
+              close < ema200 and
+              nearEma50 and
+              chasingFilter and
+              stFlipBear and
+              close < stUpper and
+              rsi < rsiShort and
+              volatilityOk and
+              (not enableMarketStructure or hasLowerLows)
+
+// ============================================================================
+// SECTION 6: POSITION TRACKING & MANAGEMENT
+// ============================================================================
+
+var float entryPrice = na
+var float slPrice = na
+var float tpPrice = na
+var string positionType = na
+var int entryBar = na
+var float riskAmount = na
+var float rewardAmount = na
+var int dailyTradeCount = 0
+var string lastTradeDate = ""
+
+// Reset daily trade counter
+currentDate = str.tostring(time, "yyyy-MM-dd")
+if currentDate != lastTradeDate
+    dailyTradeCount := 0
+    lastTradeDate := currentDate
+
+// Open Trade Count
+openTradeCount = strategy.opentrades
+
+// ============================================================================
+// SECTION 7: EXIT LOGIC & SUPERTREND HARDSTOP
+// ============================================================================
+
+// Hard Exit: SuperTrend Flip Against Position
+exitLongByStFlip = positionType == "long" and stFlipBear and close < stUpper
+exitShortByStFlip = positionType == "short" and stFlipBull and close > stLower
+
+// SL & TP Hit Detection (for exits)
+hitSlLong = positionType == "long" and low <= slPrice
+hitTpLong = positionType == "long" and high >= tpPrice
+hitSlShort = positionType == "short" and high >= slPrice
+hitTpShort = positionType == "short" and low <= tpPrice
+
+// Exit Conditions
+shouldExitLong = hitSlLong or hitTpLong or exitLongByStFlip
+shouldExitShort = hitSlShort or hitTpShort or exitShortByStFlip
+
+// ============================================================================
+// SECTION 8: TRADE EXECUTION
+// ============================================================================
+
+// ENTRY: LONG
+if longSignal and openTradeCount == 0 and dailyTradeCount < maxDailyTrades
+    entryPrice := close
+    entryBar := bar_index
+    positionType := "long"
+
+    // Calculate SL based on mode
+    slPrice := slMode == "swing" ? swingLow - (0.5 * pipSize) : entryPrice - (fixedSlPips * pipSize)
+
+    riskAmount := entryPrice - slPrice
+
+    // Calculate TP
+    if tpMode == "fixed_rr"
+        tpPrice := entryPrice + (riskAmount * riskRewardRatio)
+    else
+        tpPrice := na
+
+    rewardAmount := tpPrice - entryPrice
+
+    // Position Sizing
+    contracts = posMode == "risk_percent" ? (strategy.equity * riskPercent / 100) / (riskAmount * 100000) : fixedContracts
+
+    strategy.entry("Long", strategy.long, qty=contracts)
+    dailyTradeCount += 1
+
+    // Debug Labels
+    if enableDebug
+        label.new(bar_index, high * 1.001,
+                  text="LONG ENTRY\nPrice: " + str.tostring(entryPrice, "#.#####") +
+                       "\nSL: " + str.tostring(slPrice, "#.#####") +
+                       "\nTP: " + str.tostring(tpPrice, "#.#####"),
+                  color=color.new(color.green, 0),
+                  style=label.style_label_down,
+                  textcolor=color.white,
+                  size=size.small)
+
+    // Enhanced Alert with details
+    riskPips = math.abs(slPrice - entryPrice) / pipSize
+    rewardPips = math.abs(tpPrice - entryPrice) / pipSize
+    rrRatio = riskPips > 0 ? rewardPips / riskPips : 0
+
+    alertMsg = "BUY SIGNAL - LONG ENTRY\n" +
+              "Entry Price: " + str.tostring(entryPrice, "#.#####") + "\n" +
+              "Stop Loss: " + str.tostring(slPrice, "#.#####") + "\n" +
+              "Take Profit: " + str.tostring(tpPrice, "#.#####") + "\n" +
+              "Risk: " + str.tostring(riskPips, "#.##") + " pips\n" +
+              "Reward: " + str.tostring(rewardPips, "#.##") + " pips\n" +
+              "R:R Ratio: 1:" + str.tostring(rrRatio, "#.##")
+
+    alert(alertMsg, alert.freq_once_per_bar_close)
+
+// ENTRY: SHORT
+if shortSignal and openTradeCount == 0 and dailyTradeCount < maxDailyTrades
+    entryPrice := close
+    entryBar := bar_index
+    positionType := "short"
+
+    // Calculate SL based on mode
+    slPrice := slMode == "swing" ? swingHigh + (0.5 * pipSize) : entryPrice + (fixedSlPips * pipSize)
+
+    riskAmount := slPrice - entryPrice
+
+    // Calculate TP
+    tpPrice := tpMode == "fixed_rr" ? entryPrice - (riskAmount * riskRewardRatio) : na
+
+    rewardAmount := math.abs(tpPrice - entryPrice)
+
+    // Position Sizing
+    contracts = posMode == "risk_percent" ? (strategy.equity * riskPercent / 100) / (riskAmount * 100000) : fixedContracts
+
+    strategy.entry("Short", strategy.short, qty=contracts)
+    dailyTradeCount += 1
+
+    // Debug Labels
+    if enableDebug
+        label.new(bar_index, low * 0.999,
+                  text="SHORT ENTRY\nPrice: " + str.tostring(entryPrice, "#.#####") +
+                       "\nSL: " + str.tostring(slPrice, "#.#####") +
+                       "\nTP: " + str.tostring(tpPrice, "#.#####"),
+                  color=color.new(color.red, 0),
+                  style=label.style_label_up,
+                  textcolor=color.white,
+                  size=size.small)
+
+    // Enhanced Alert with details
+    riskPips = math.abs(slPrice - entryPrice) / pipSize
+    rewardPips = math.abs(tpPrice - entryPrice) / pipSize
+    rrRatio = riskPips > 0 ? rewardPips / riskPips : 0
+
+    alertMsg = "SELL SIGNAL - SHORT ENTRY\n" +
+              "Entry Price: " + str.tostring(entryPrice, "#.#####") + "\n" +
+              "Stop Loss: " + str.tostring(slPrice, "#.#####") + "\n" +
+              "Take Profit: " + str.tostring(tpPrice, "#.#####") + "\n" +
+              "Risk: " + str.tostring(riskPips, "#.##") + " pips\n" +
+              "Reward: " + str.tostring(rewardPips, "#.##") + " pips\n" +
+              "R:R Ratio: 1:" + str.tostring(rrRatio, "#.##")
+
+    alert(alertMsg, alert.freq_once_per_bar_close)
+
+// ============================================================================
+// SECTION 9: EXIT EXECUTION
+// ============================================================================
+
+// EXIT: LONG (SL or TP)
+if positionType == "long" and shouldExitLong
+    if hitSlLong
+        strategy.exit("Long SL", "Long", limit=na, stop=slPrice)
+        pnlLong = (close - entryPrice) / pipSize
+        alert("STOP LOSS HIT - LONG CLOSED\n" +
+              "Exit Price: " + str.tostring(slPrice, "#.#####") + "\n" +
+              "P&L: " + str.tostring(pnlLong, "#.##") + " pips", alert.freq_once_per_bar_close)
+    else if hitTpLong
+        strategy.exit("Long TP", "Long", limit=tpPrice, stop=na)
+        pnlLong = (tpPrice - entryPrice) / pipSize
+        alert("TAKE PROFIT HIT - LONG CLOSED\n" +
+              "Exit Price: " + str.tostring(tpPrice, "#.#####") + "\n" +
+              "P&L: " + str.tostring(pnlLong, "#.##") + " pips", alert.freq_once_per_bar_close)
+    else if exitLongByStFlip
+        strategy.exit("Long ST Flip", "Long", limit=na, stop=na)
+        pnlLong = (close - entryPrice) / pipSize
+        alert("SUPERTREND FLIP EXIT - LONG CLOSED\n" +
+              "Exit Price: " + str.tostring(close, "#.#####") + "\n" +
+              "P&L: " + str.tostring(pnlLong, "#.##") + " pips", alert.freq_once_per_bar_close)
+
+    positionType := na
+
+// EXIT: SHORT (SL or TP)
+if positionType == "short" and shouldExitShort
+    if hitSlShort
+        strategy.exit("Short SL", "Short", limit=na, stop=slPrice)
+        pnlShort = (entryPrice - close) / pipSize
+        alert("STOP LOSS HIT - SHORT CLOSED\n" +
+              "Exit Price: " + str.tostring(slPrice, "#.#####") + "\n" +
+              "P&L: " + str.tostring(pnlShort, "#.##") + " pips", alert.freq_once_per_bar_close)
+    else if hitTpShort
+        strategy.exit("Short TP", "Short", limit=tpPrice, stop=na)
+        pnlShort = (entryPrice - tpPrice) / pipSize
+        alert("TAKE PROFIT HIT - SHORT CLOSED\n" +
+              "Exit Price: " + str.tostring(tpPrice, "#.#####") + "\n" +
+              "P&L: " + str.tostring(pnlShort, "#.##") + " pips", alert.freq_once_per_bar_close)
+    else if exitShortByStFlip
+        strategy.exit("Short ST Flip", "Short", limit=na, stop=na)
+        pnlShort = (entryPrice - close) / pipSize
+        alert("SUPERTREND FLIP EXIT - SHORT CLOSED\n" +
+              "Exit Price: " + str.tostring(close, "#.#####") + "\n" +
+              "P&L: " + str.tostring(pnlShort, "#.##") + " pips", alert.freq_once_per_bar_close)
+
+    positionType := na
+
+// ============================================================================
+// SECTION 10: PLOTTING & VISUALIZATION
+// ============================================================================
+
+// Plot EMAs
+plot(ema200, title="EMA 200", color=color.new(color.blue, 0), linewidth=2)
+plot(ema50, title="EMA 50", color=color.new(color.orange, 0), linewidth=2)
+
+// Plot SuperTrend
+plotSt = stBullish ? stLower : stUpper
+stColorPlot = stBullish ? color.new(color.green, 50) : color.new(color.red, 50)
+plot(plotSt, title="SuperTrend", color=stColorPlot, linewidth=2)
+
+// Plot RSI in separate pane
+plot(rsi, title="RSI", color=color.new(color.purple, 0), linewidth=2)
+hline(50, title="RSI 50 Level", color=color.new(color.gray, 50), linestyle=hline.style_dashed)
+hline(30, title="RSI 30", color=color.new(color.red, 50), linestyle=hline.style_dotted)
+hline(70, title="RSI 70", color=color.new(color.green, 50), linestyle=hline.style_dotted)
+
+// Plot ATR % as info
+plot(atrPercent * 100, title="ATR %", color=color.new(color.gray, 70), linewidth=1)
+
+// ============================================================================
+// BUY/SELL SIGNALS - LARGE VISUAL INDICATORS
+// ============================================================================
+
+// Plot Buy Arrow - Shows when conditions align
+plotshape(longSignal, title="BUY Signal", style=shape.triangleup,
+          location=location.belowbar, color=color.new(color.lime, 0),
+          size=size.large, text="BUY", editable=true)
+
+// Plot Sell Arrow - Shows when conditions align
+plotshape(shortSignal, title="SELL Signal", style=shape.triangledown,
+          location=location.abovebar, color=color.new(color.red, 0),
+          size=size.large, text="SELL", editable=true)
+
+// Plot long position marker
+longOpenIndicator = strategy.opentrades > 0 and positionType == "long"
+plotshape(longOpenIndicator, title="Long Open", style=shape.diamond,
+          location=location.abovebar, color=color.new(color.green, 0),
+          size=size.small, editable=true)
+
+// Plot short position marker
+shortOpenIndicator = strategy.opentrades > 0 and positionType == "short"
+plotshape(shortOpenIndicator, title="Short Open", style=shape.diamond,
+          location=location.belowbar, color=color.new(color.red, 0),
+          size=size.small, editable=true)
+
+// ============================================================================
+// DEBUG LABELS - SHOW SIGNAL CONDITIONS
+// ============================================================================
+
+if enableDebug and barstate.islast
+    // Show what's blocking the signals
+    debugText = ""
+
+    if not inTradingSession
+        debugText := debugText + "❌ Not in trading session\n"
+    else
+        debugText := debugText + "✅ In trading session\n"
+
+    if not volatilityOk
+        debugText := debugText + "❌ ATR too low\n"
+    else
+        debugText := debugText + "✅ ATR OK\n"
+
+    if stFlipBull
+        debugText := debugText + "✅ ST Flip Bullish\n"
+    else
+        debugText := debugText + "❌ No ST Flip Bull\n"
+
+    if stFlipBear
+        debugText := debugText + "✅ ST Flip Bearish\n"
+    else
+        debugText := debugText + "❌ No ST Flip Bear\n"
+
+    debugLabel = label.new(bar_index, high, text=debugText,
+                          color=color.new(color.blue, 80),
+                          style=label.style_label_left,
+                          textcolor=color.white,
+                          size=size.small)
+    label.delete(debugLabel[1])
+
+// ============================================================================
+// SECTION 11: BACKTEST METRICS & REPORTING
+// ============================================================================
+
+// Retrieve backtest stats
+totalTrades = strategy.closedtrades
+totalWins = 0
+totalLoss = 0
+totalProfit = 0.0
+
+for i = 0 to math.min(totalTrades - 1, 100)
+    tradeProfit = strategy.closedtrades.profit(i)
+    totalProfit += tradeProfit
+    if tradeProfit > 0
+        totalWins += 1
+    else
+        totalLoss += 1
+
+winRate = totalTrades > 0 ? (totalWins / totalTrades) * 100 : 0
+avgRR = totalTrades > 0 ? riskRewardRatio : 0
+expectancy = totalTrades > 0 ? (totalProfit / totalTrades) : 0
+
+// Metrics string for display
+metricsText = "=== PERFORMANCE ===\n" +
+              "Total Trades: " + str.tostring(totalTrades) + "\n" +
+              "Win Rate: " + str.tostring(winRate, "#.#") + "%\n" +
+              "Net P&L: " + str.tostring(strategy.netprofit, "#.##") + "\n" +
+              "Max DD: " + str.tostring(strategy.max_drawdown, "#.##%") + "\n" +
+              "Expectancy: " + str.tostring(expectancy, "#.##")
+
+// ============================================================================
+// SECTION 12: ALERT CONDITIONS FOR TRADINGVIEW
+// ============================================================================
+
+// BUY/SELL ALERTS
+alertcondition(longSignal, title="BUY - Long Entry Signal",
+               message="BUY SIGNAL TRIGGERED: Price above EMA200, pullback to EMA50, SuperTrend flip, RSI >50")
+alertcondition(shortSignal, title="SELL - Short Entry Signal",
+               message="SELL SIGNAL TRIGGERED: Price below EMA200, pullback to EMA50, SuperTrend flip, RSI <50")
+
+// TECHNICAL ALERTS
+alertcondition(stFlipBull, title="SuperTrend Bullish Flip",
+               message="SuperTrend flipped bullish - potential trend reversal")
+alertcondition(stFlipBear, title="SuperTrend Bearish Flip",
+               message="SuperTrend flipped bearish - potential trend reversal")
+
+// SESSION ALERTS
+alertcondition(not inTradingSession, title="Outside Trading Hours",
+               message="Outside London/NY trading sessions - strategy is inactive")
+
+// VOLATILITY ALERT
+alertcondition(enableAtrFilter and not volatilityOk, title="Low Volatility Alert",
+               message="ATR is below minimum threshold - no trades expected")
+
+// ============================================================================
+// SECTION 13: REAL-TIME STATUS DASHBOARD (CHART LABEL)
+// ============================================================================
+
+var table statusTable = na
+
+if barstate.islast
+    if na(statusTable)
+        statusTable := table.new(
+            position=position.top_right,
+            columns=2,
+            rows=10,
+            bgcolor=color.new(color.navy, 50),
+            frame_color=color.gray,
+            frame_width=2,
+            border_color=color.gray,
+            border_width=1)
+
+        table.cell(statusTable, 0, 0, text="STRATEGY STATUS", text_color=color.white, bgcolor=color.new(color.blue, 0))
+        table.cell(statusTable, 1, 0, text="", text_color=color.white)
+
+    // Status info
+    sessionStatus = inTradingSession ? "ACTIVE" : "INACTIVE"
+    sessionColor = inTradingSession ? color.new(color.green, 0) : color.new(color.red, 0)
+    table.cell(statusTable, 0, 1, text="Session Status", text_color=color.white)
+    table.cell(statusTable, 1, 1, text=sessionStatus, text_color=sessionColor, bgcolor=color.new(color.black, 50))
+
+    // Current RSI
+    table.cell(statusTable, 0, 2, text="RSI (14)", text_color=color.white)
+    table.cell(statusTable, 1, 2, text=str.tostring(rsi, "#.##"), text_color=color.purple, bgcolor=color.new(color.black, 50))
+
+    // Distance from EMA50
+    table.cell(statusTable, 0, 3, text="Distance EMA50", text_color=color.white)
+    table.cell(statusTable, 1, 3, text=str.tostring(distFromEma50Pct, "#.##") + "%", text_color=color.orange, bgcolor=color.new(color.black, 50))
+
+    // SuperTrend Status
+    stStatus = stBullish ? "BULLISH" : "BEARISH"
+    stColorTable = stBullish ? color.new(color.green, 0) : color.new(color.red, 0)
+    table.cell(statusTable, 0, 4, text="SuperTrend", text_color=color.white)
+    table.cell(statusTable, 1, 4, text=stStatus, text_color=stColorTable, bgcolor=color.new(color.black, 50))
+
+    // ATR Status
+    atrStatus = volatilityOk ? "OK" : "LOW"
+    atrColor = volatilityOk ? color.new(color.green, 0) : color.new(color.red, 0)
+    table.cell(statusTable, 0, 5, text="ATR Filter", text_color=color.white)
+    table.cell(statusTable, 1, 5, text=atrStatus, text_color=atrColor, bgcolor=color.new(color.black, 50))
+
+    // Open Trades
+    table.cell(statusTable, 0, 6, text="Open Trades", text_color=color.white)
+    openTradesText = str.tostring(openTradeCount)
+    openTradesColor = openTradeCount > 0 ? color.new(color.orange, 0) : color.new(color.gray, 0)
+    table.cell(statusTable, 1, 6, text=openTradesText, text_color=openTradesColor, bgcolor=color.new(color.black, 50))
+
+    // Daily Trades
+    table.cell(statusTable, 0, 7, text="Daily Trades", text_color=color.white)
+    table.cell(statusTable, 1, 7, text=str.tostring(dailyTradeCount) + "/" + str.tostring(maxDailyTrades),
+               text_color=color.yellow, bgcolor=color.new(color.black, 50))
+
+    // Total Closed Trades
+    table.cell(statusTable, 0, 8, text="Total Trades", text_color=color.white)
+    table.cell(statusTable, 1, 8, text=str.tostring(totalTrades), text_color=color.gray, bgcolor=color.new(color.black, 50))
+
+    // Win Rate
+    table.cell(statusTable, 0, 9, text="Win Rate", text_color=color.white)
+    wrColor = winRate >= 55 ? color.new(color.green, 0) : (winRate >= 50 ? color.new(color.yellow, 0) : color.new(color.red, 0))
+    table.cell(statusTable, 1, 9, text=str.tostring(winRate, "#.#") + "%", text_color=wrColor, bgcolor=color.new(color.black, 50))
+
+// ============================================================================
+// END OF STRATEGY
+// ============================================================================

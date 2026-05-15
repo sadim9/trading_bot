@@ -100,3 +100,24 @@ class APIClient:
         })
         self._raise(resp)
         return resp.json()
+
+    # ── User Settings ─────────────────────────────────────────
+
+    def get_user_settings(self) -> dict:
+        """Load persisted user settings from the backend."""
+        try:
+            resp = self.session.get(self._url("/settings"), timeout=5)
+            if resp.ok:
+                return resp.json().get("settings", {})
+        except Exception:
+            pass
+        return {}
+
+    def save_user_settings(self, settings: dict) -> bool:
+        """Persist user settings to the backend. Returns True on success."""
+        try:
+            resp = self.session.put(self._url("/settings"),
+                                    json={"settings": settings}, timeout=5)
+            return resp.ok
+        except Exception:
+            return False

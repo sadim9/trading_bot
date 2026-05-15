@@ -41,4 +41,18 @@ sleep 2
 # request www.theapextraders.com, don't get a TLS mismatch error.
 docker run --rm \
     -v "$(pwd)/.certbot/conf:/etc/letsencrypt" \
-    -v "$(pwd)/.certbot/www:/var/w
+    -v "$(pwd)/.certbot/www:/var/www/certbot" \
+    certbot/certbot certonly \
+    --webroot \
+    --webroot-path=/var/www/certbot \
+    --email "$CERTBOT_EMAIL" \
+    --agree-tos \
+    --no-eff-email \
+    -d "$DOMAIN" \
+    -d "www.$DOMAIN"
+
+docker stop tmp_nginx 2>/dev/null || true
+
+# Create Docker named volumes and copy certs into them
+echo "[+] Certificates obtained for $DOMAIN and www.$DOMAIN"
+echo "[+] You can now run: docker compose up -d"

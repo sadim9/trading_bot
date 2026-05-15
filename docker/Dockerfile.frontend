@@ -30,4 +30,8 @@ CMD ["streamlit", "run", "dashboard/app.py", \
      "--server.headless", "true", \
      "--server.enableCORS", "false", \
      "--server.enableXsrfProtection", "false", \
-     "--browser.gatherUsageStats", "false"]
+     "--server.maxUploadSize", "50", \
+     "--server.maxMessageSize", "200", \
+     "--browser.gatherUsageStats", "false", \
+     "--runner.fastReruns", "true", \
+     "--logger.level", "warning"]

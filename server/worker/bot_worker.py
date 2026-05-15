@@ -138,4 +138,13 @@ async def main():
         cycle_start = datetime.now(timezone.utc)
         log.info(f"--- Cycle start: {cycle_start.isoformat()} ---")
         await run_signal_cycle(symbols)
-        elapsed = (datetime.now(timezone.utc) - cycle_start).total_seconds
+        elapsed = (datetime.now(timezone.utc) - cycle_start).total_seconds()
+        sleep_for = max(0, POLL_INTERVAL - elapsed)
+        log.info(f"--- Cycle done in {elapsed:.1f}s, sleeping {sleep_for:.0f}s ---")
+        await asyncio.sleep(sleep_for)
+
+    log.info("Bot worker stopped.")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

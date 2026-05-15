@@ -27,3 +27,7 @@ redis>=5.0.4
 # ── Broker SDKs (worker + optional dashboard use) ─────────────
 # Interactive Brokers — lazy-imported, only activates when IB is configured
 ib_insync>=0.9.86
+
+# ── Async performance (uvicorn --loop uvloop --http httptools) ─────────────────
+uvloop>=0.19.0
+httptools>=0.6.0
