@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ────────────────────────────────────────────────────────────��
+# ─────────────────────────────────────────────────────────────
 #  Let's Encrypt SSL Certificate Setup
 #  Run AFTER vps_setup.sh and BEFORE docker compose up
 #
@@ -20,15 +20,15 @@ if [ -f .env ]; then
     CERTBOT_EMAIL=$(grep -E '^CERTBOT_EMAIL=' .env | head -1 | sed 's/^CERTBOT_EMAIL=//' | tr -d '"'"'"' ')
 fi
 
-[ -z "${DOMAIN:-}" ]          && { echo "Set DOMAIN in .env"; exit 1; }
-[ -z "${CERTBOT_EMAIL:-}" ]   && { echo "Set CERTBOT_EMAIL in .env"; exit 1; }
+[ -z "${DOMAIN:-}" ]        && { echo "Set DOMAIN in .env"; exit 1; }
+[ -z "${CERTBOT_EMAIL:-}" ] && { echo "Set CERTBOT_EMAIL in .env"; exit 1; }
 
-echo "[+] Getting certificate for $DOMAIN via Certbot standalone..."
+echo "[+] Getting certificate for $DOMAIN and www.$DOMAIN via Certbot..."
 
 # Update nginx.conf with the actual domain
 sed -i "s/DOMAIN_PLACEHOLDER/$DOMAIN/g" nginx/nginx.conf
 
-# Temporarily start Nginx on port 80 only (no SSL yet) using a minimal config
+# Temporarily start Nginx on port 80 only (no SSL yet)
 docker run --rm -d --name tmp_nginx \
     -p 80:80 \
     -v "$(pwd)/nginx/nginx.conf:/etc/nginx/nginx.conf:ro" \
