@@ -142,8 +142,22 @@ def fetch_tradingview(
     tv_interval = interval_map.get(tv_interval_str, TvInterval.in_1_hour)
 
     try:
-        # TvDatafeed without login — free, anonymous access
-        tv = TvDatafeed()
+        # Use saved credentials if available, otherwise anonymous access
+        _tv_user = None
+        _tv_pass = None
+        try:
+            import streamlit as st
+            _tv_user = st.session_state.get("_tv_username") or None
+            _tv_pass = st.session_state.get("_tv_password") or None
+        except Exception:
+            pass
+        # Fall back to environment variables if not set in session
+        if not _tv_user:
+            import os
+            _tv_user = os.getenv("TRADINGVIEW_USERNAME") or None
+            _tv_pass = os.getenv("TRADINGVIEW_PASSWORD") or None
+
+        tv = TvDatafeed(username=_tv_user, password=_tv_pass)
         raw = tv.get_hist(symbol=tv_sym, exchange=exch,
                           interval=tv_interval, n_bars=min(n_bars, 5000))
     except Exception as e:

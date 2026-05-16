@@ -51,8 +51,9 @@ signal.signal(signal.SIGINT,  _handle_shutdown)
 async def run_signal_cycle(symbols: list[str]):
     """Generate signals for all configured symbols and persist to DB."""
     from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
     from server.db.database import AsyncSessionLocal
-    from server.db.models import Signal, Trade
+    from server.db.models import Signal, Trade, OHLCVBar
 
     try:
         from config import CONFIG
@@ -79,6 +80,40 @@ async def run_signal_cycle(symbols: list[str]):
                     entry=rec.entry_price, stop_loss=rec.stop_loss,
                     take_profit=rec.take_profit, size_pct=rec.position_size_pct, df=df,
                 )
+
+                # ── Persist OHLCV bars so the dashboard can show history ──────
+                # Upsert the last 500 bars — idempotent on (symbol, interval, source, ts)
+                try:
+                    _ivl = CONFIG.data.default_interval
+                    _bars = df.tail(500).copy()
+                    _bar_rows = []
+                    for _ts, _row in _bars.iterrows():
+                        _ts_dt = _ts.to_pydatetime() if hasattr(_ts, "to_pydatetime") else _ts
+                        _ts_dt = _ts_dt.replace(tzinfo=None)  # store as naive UTC
+                        _bar_rows.append({
+                            "id":       str(__import__("uuid").uuid4()),
+                            "symbol":   symbol,
+                            "interval": _ivl,
+                            "source":   DATA_SOURCE,
+                            "ts":       _ts_dt,
+                            "open":     float(_row.get("Open",  _row.get("open",  0))),
+                            "high":     float(_row.get("High",  _row.get("high",  0))),
+                            "low":      float(_row.get("Low",   _row.get("low",   0))),
+                            "close":    float(_row.get("Close", _row.get("close", 0))),
+                            "volume":   float(_row.get("Volume", _row.get("volume", 0)) or 0),
+                        })
+                    if _bar_rows:
+                        stmt = pg_insert(OHLCVBar).values(_bar_rows)
+                        stmt = stmt.on_conflict_do_update(
+                            constraint="uq_ohlcv_bar",
+                            set_={"open": stmt.excluded.open, "high": stmt.excluded.high,
+                                  "low": stmt.excluded.low,  "close": stmt.excluded.close,
+                                  "volume": stmt.excluded.volume},
+                        )
+                        await db.execute(stmt)
+                        log.info(f"  {symbol}: upserted {len(_bar_rows)} OHLCV bars")
+                except Exception as _ohlcv_err:
+                    log.warning(f"  {symbol}: OHLCV save failed: {_ohlcv_err}")
 
                 sig = Signal(
                     user_id            = WORKER_USER_ID or None,

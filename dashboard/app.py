@@ -31,7 +31,8 @@ def _local_now():
     from datetime import datetime, timezone, timedelta
     import streamlit as st
     offset = float(st.session_state.get("tz_offset_hours", 3.0))
-    return datetime.now(timezone.utc).replace(tzinfo=timezone.utc)
+    local_tz = timezone(timedelta(hours=offset))
+    return datetime.now(timezone.utc).astimezone(local_tz)
 
 def _fmt_local(dt_str: str) -> str:
     """Format UTC timestamp using user's local timezone offset."""
@@ -857,7 +858,7 @@ _defaults = dict(
     bitoasis_connected=False,
     backtest_run=False, backtest_equity=None, backtest_trades=None,
     backtest_metrics=None, historical_signals=[],
-    refresh_interval=30, auto_refresh=False, n_candles=200, crypto_limit=1000,
+    refresh_interval=30, auto_refresh=True, n_candles=200, crypto_limit=1000,
     ma_cross_result=None, show_ma_cross_overlay=True,
     # Strategy mode: "multi" | "markov" | "markov_multi"
     strategy_mode="multi",
@@ -1240,6 +1241,24 @@ if need_load:
         df, warn = _load(sym, ivl, per, src, force=is_manual, crypto_limit=lim)
     st.session_state["_last_sym"] = sym; st.session_state["_last_ivl"] = ivl
     if warn: st.warning(warn)
+    # Issue helpful guidance for intraday US stocks with no data
+    if df is None or (df is not None and len(df) < 5):
+        _is_intraday = ivl in ("1m", "5m", "15m", "30m")
+        _is_yf = src == "yfinance"
+        _is_stock = not any(x in sym.upper() for x in (
+            "USD","BTC","ETH","SOL","BNB","XRP","ADA","DOGE","AVAX","LINK","ATOM","USDT"
+        ))
+        if _is_intraday and _is_yf and _is_stock:
+            st.info(
+                f"⚠️ **No {ivl} data returned for {sym} via Yahoo Finance.**\n\n"
+                "Possible reasons:\n"
+                "- **Outside market hours** — US markets trade Mon–Fri 09:30–16:00 ET. "
+                "Yahoo returns empty data for intraday intervals outside trading hours.\n"
+                "- **Symbol not found** — try the exact Yahoo ticker (e.g. `AAPL`, `SPY`, `MSFT`).\n"
+                "- **Yahoo rate limit** — try switching source to `twelvedata` for reliable intraday US stock data.\n\n"
+                "💡 *Tip: Switch source to `twelvedata` (free API key at twelvedata.com) for 5m US stock data that works anytime.*",
+                icon="📊"
+            )
     if df is not None:
         st.session_state.df           = df
         st.session_state.last_refresh = time.time()
@@ -1399,12 +1418,8 @@ _data_stale    = _data_age_hrs > 2   # data older than 2 hours is stale
 _status_cls    = "qt-status-stale" if _stale or _data_stale else "qt-status-live"
 _last_bar_str = _last_bar_ts.strftime("%b %d %H:%M") if _last_bar_ts is not None else "?"
 _status_label = "STALE" if (_stale or _data_stale) else "LIVE"
-# Detect timezone offset for display
-_tz_offset = datetime.now().astimezone().utcoffset()
-_tz_str = "UTC"
-if _tz_offset:
-    _tz_h = int(_tz_offset.total_seconds() / 3600)
-    _tz_str = f"UTC{_tz_h:+d}"
+# Use user's saved timezone offset for display (not server TZ)
+_tz_str = tz_label()
 st.markdown(f"""
 <div class="qt-status-bar">
   <span class="{_status_cls}">● {_status_label}</span>
@@ -1630,6 +1645,16 @@ with chart_col:
                 )
 
     with tab_mkv:
+        _mkv_df = st.session_state.get("df")
+        if _mkv_df is None or len(_mkv_df) < 40:
+            st.info("⏳ Loading chart data for Markov analysis...", icon="📊")
+            _DATA_CACHE.clear(); clear_cache(); clear_ingestion_cache(); clear_commodity_cache()
+            _mkv_lim = max(_period_to_candles(per, ivl), 200)
+            _mkv_df, _mkv_warn = _load(sym, ivl, per, src, force=True, crypto_limit=_mkv_lim)
+            if _mkv_warn: st.warning(_mkv_warn)
+            if _mkv_df is not None:
+                st.session_state.df = _mkv_df
+                st.session_state.last_refresh = time.time()
         render_markov_tab(st.session_state.get("df"), st.session_state.get("symbol", ""))
 
     with tab_log:
@@ -2083,12 +2108,23 @@ with panel_col:
 # Broker panel
 render_broker_panel(df=df, rec=rec, ma_cross_result=st.session_state.ma_cross_result)
 
-# Auto-refresh: only rerun when full refresh interval has elapsed.
-# DO NOT use time.sleep(1)+rerun - that reruns the whole page every second.
+# Auto-refresh: use st.fragment rerun where available so only the data
+# fetching reruns without causing the full page to fade/flash.
+# Falls back to st.rerun() on older Streamlit versions.
 if st.session_state.auto_refresh:
     elapsed   = time.time() - st.session_state.last_refresh
     remaining = max(0, rsec - elapsed)
     if remaining <= 0:
+        # Clear caches so fresh data is fetched
+        _DATA_CACHE.clear(); clear_cache(); clear_ingestion_cache(); clear_commodity_cache()
+        st.session_state.df = None  # force re-fetch on next render
         st.rerun()
     else:
-        st.caption(f"Auto-refresh in {int(remaining)}s")
+        # Show a subtle countdown that doesn't interrupt the user
+        _refresh_pct = int((1 - remaining / rsec) * 100)
+        st.markdown(
+            f'<div style="position:fixed;bottom:8px;right:12px;font-family:var(--mono);'
+            f'font-size:9px;color:var(--text-mute);z-index:999;letter-spacing:.06em">'
+            f'AUTO ⟳ {int(remaining)}s</div>',
+            unsafe_allow_html=True,
+        )

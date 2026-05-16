@@ -10,6 +10,7 @@ Tables:
   strategy_configs — saved strategy parameter sets
   backtest_results — stored backtest runs with equity curves
   audit_logs      — security and activity audit trail
+  ohlcv_bars      — historical OHLCV price bars saved by the worker
 """
 
 from __future__ import annotations
@@ -338,4 +339,34 @@ class AuditLog(Base):
     __table_args__ = (
         Index("ix_audit_logs_created_at", "created_at"),
         Index("ix_audit_logs_action_status", "action", "status"),
+    )
+
+
+# ─── OHLCV BARS ───────────────────────────────────────────────────────────────
+
+class OHLCVBar(Base):
+    """Historical OHLCV price bars saved by the background worker.
+
+    Each row is one candle. The combination of (symbol, interval, source, ts)
+    is unique — upsert on conflict so the worker is idempotent.
+    """
+    __tablename__ = "ohlcv_bars"
+
+    id:        Mapped[str]      = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    symbol:    Mapped[str]      = mapped_column(String(30),  nullable=False, index=True)
+    interval:  Mapped[str]      = mapped_column(String(10),  nullable=False)
+    source:    Mapped[str]      = mapped_column(String(30),  nullable=False)
+    ts:        Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, index=True)
+
+    open:      Mapped[float]    = mapped_column(Float, nullable=False)
+    high:      Mapped[float]    = mapped_column(Float, nullable=False)
+    low:       Mapped[float]    = mapped_column(Float, nullable=False)
+    close:     Mapped[float]    = mapped_column(Float, nullable=False)
+    volume:    Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "interval", "source", "ts", name="uq_ohlcv_bar"),
+        Index("ix_ohlcv_symbol_interval_ts", "symbol", "interval", "ts"),
     )
