@@ -42,6 +42,8 @@ _PERSIST_KEYS = [
     "auto_refresh",
     "pinned_tickers",
     "strategy_mode",
+    "_tv_username",
+    "_tv_password",
 ]
 
 

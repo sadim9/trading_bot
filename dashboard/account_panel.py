@@ -457,20 +457,34 @@ def render_account_panel():
         else:
             with st.spinner("Starting Discord bot..."):
                 try:
-                    from brokers.discord_confirm import DiscordConfirmBot
-                    bot = DiscordConfirmBot(
-                        bot_token=dc_token,
-                        channel_id=int(dc_channel),
-                        timeout_seconds=timeout,
-                    )
-                    st.session_state["discord_confirm_bot"] = bot
-                    st.session_state["discord_connected"]   = True
-                    st.session_state["dc_require_saved"]    = require  # store under different key
-                    dc_connected = True
-                    st.success("✅ Discord bot connected and ready!")
-                except Exception as e:
+                    import discord as _discord_check  # noqa: F401
+                except ImportError:
+                    st.error("discord.py is not installed in this container. Run: pip install discord.py")
                     st.session_state["discord_connected"] = False
-                    st.error(f"Discord failed: {e}")
+                else:
+                    try:
+                        from brokers.discord_confirm import DiscordConfirmBot
+                        bot = DiscordConfirmBot(
+                            bot_token=dc_token,
+                            channel_id=int(dc_channel),
+                            timeout_seconds=timeout,
+                        )
+                        st.session_state["discord_confirm_bot"] = bot
+                        st.session_state["discord_connected"]   = True
+                        st.session_state["dc_require_saved"]    = require
+                        dc_connected = True
+                        st.success("✅ Discord bot connected and ready!")
+                    except Exception as e:
+                        st.session_state["discord_connected"] = False
+                        err = str(e)
+                        if "401" in err or "Improper token" in err or "token" in err.lower():
+                            st.error("❌ Invalid Bot Token — double-check the token from the Discord Developer Portal.")
+                        elif "403" in err or "Missing Access" in err:
+                            st.error("❌ Bot lacks permission — make sure it's invited to your server with correct permissions.")
+                        elif "channel" in err.lower() or "404" in err:
+                            st.error("❌ Channel ID not found — right-click the channel in Discord → Copy Channel ID.")
+                        else:
+                            st.error(f"❌ Discord connection failed: {e}")
 
     if b2.button("Send Test Message", use_container_width=True, key="dc_test"):
         bot = st.session_state.get("discord_confirm_bot")
@@ -483,6 +497,70 @@ def render_account_panel():
     st.markdown(_status_badge(dc_connected,
         f"Bot online | Confirmation required: {require} | Timeout: {timeout}s",
         "Not connected"
+    ), unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  TRADINGVIEW DATA CONNECTION
+    # ══════════════════════════════════════════════════════════════════════
+    st.markdown('<div class="acct-section">', unsafe_allow_html=True)
+    st.markdown('<div class="acct-title">📈 TRADINGVIEW — Data Connection</div>', unsafe_allow_html=True)
+    st.markdown("""
+    <div class="acct-how">
+      TradingView provides free historical OHLCV data via the unofficial tvdatafeed library.
+      Anonymous access works for most symbols but may be rate-limited. Logging in with a
+      free TradingView account gives higher rate limits and access to more symbols.<br><br>
+      <b>To get credentials:</b> Register a free account at <b>tradingview.com</b>.<br>
+      Leave blank to use anonymous (unauthenticated) access.
+    </div>
+    """, unsafe_allow_html=True)
+
+    _tv_user = st.session_state.get("_tv_username", "")
+    _tv_pass = st.session_state.get("_tv_password", "")
+    tv_col1, tv_col2 = st.columns(2)
+    tv_username = tv_col1.text_input(
+        "TradingView Username", value=_tv_user,
+        placeholder="your_tv_username", key="tv_username_input",
+    )
+    tv_password = tv_col2.text_input(
+        "TradingView Password", value=_tv_pass,
+        placeholder="••••••••", type="password", key="tv_password_input",
+    )
+
+    tv_col_a, tv_col_b = st.columns(2)
+    if tv_col_a.button("💾 Save TradingView Credentials", type="primary",
+                        use_container_width=True, key="tv_save_btn"):
+        st.session_state["_tv_username"] = tv_username
+        st.session_state["_tv_password"] = tv_password
+        save_settings()
+        if tv_username:
+            st.success(f"✅ TradingView credentials saved for user: {tv_username}")
+        else:
+            st.info("ℹ️ Credentials cleared — using anonymous TradingView access.")
+
+    if tv_col_b.button("🔍 Test Connection", use_container_width=True, key="tv_test_btn"):
+        with st.spinner("Testing TradingView connection..."):
+            try:
+                from tvDatafeed import TvDatafeed, Interval as TvInterval
+                _tv = TvDatafeed(
+                    username=tv_username or None,
+                    password=tv_password or None,
+                )
+                _test = _tv.get_hist("BTCUSD", "BINANCE", interval=TvInterval.in_1_hour, n_bars=5)
+                if _test is not None and not _test.empty:
+                    _mode = f"authenticated as {tv_username}" if tv_username else "anonymous"
+                    st.success(f"✅ TradingView connected ({_mode}) — {len(_test)} bars received.")
+                else:
+                    st.warning("⚠️ Connected but received no data. Try a different symbol.")
+            except ImportError:
+                st.error("tvdatafeed-enhanced not installed. Rebuild the Docker container.")
+            except Exception as e:
+                st.error(f"❌ TradingView connection failed: {e}")
+
+    _tv_status = bool(st.session_state.get("_tv_username", ""))
+    st.markdown(_status_badge(_tv_status,
+        f"Authenticated as {st.session_state.get('_tv_username', '')}",
+        "Anonymous access (no login)"
     ), unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
