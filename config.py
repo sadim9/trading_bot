@@ -152,14 +152,4 @@ class BotConfig:
 
 # Default singleton config
 CONFIG = BotConfig()
-:   SignalConfig   = field(default_factory=SignalConfig)
-    risk:     RiskConfig     = field(default_factory=RiskConfig)
-    backtest: BacktestConfig = field(default_factory=BacktestConfig)
-    log:      LogConfig      = field(default_factory=LogConfig)
-
-    def __post_init__(self):
-        self.weights.validate()
-
-
-# Default singleton config
 CONFIG = BotConfig()

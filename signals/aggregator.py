@@ -321,9 +321,6 @@ class SignalAggregator:
         kelly_f   = min(kelly_f, rc.max_position_pct)
 
         return round(kelly_f * 100, 2)
- self.cfg.strategy.ai_n_estimators,
-            )
-            self._weights["ai_model"]          = w.ai_model * scale
 
     def _position_size(self, score: float, entry: float, stop: float) -> float:
         """Kelly or fixed position sizing. Returns % of portfolio."""
