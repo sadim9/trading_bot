@@ -152,4 +152,3 @@ class BotConfig:
 
 # Default singleton config
 CONFIG = BotConfig()
-CONFIG = BotConfig()
