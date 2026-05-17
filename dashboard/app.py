@@ -849,7 +849,7 @@ _cfg_ivl = CONFIG.data.ui_default_interval
 _cfg_per = CONFIG.data.ui_default_period
 
 _defaults = dict(
-    last_refresh=0, prev_signal=None,
+    last_refresh=time.time(), prev_signal=None,
     alert_engine=AlertEngine(), df=None, rec=None,  # rebuilt below from persisted settings
     # Use config UI defaults so Settings → Save Defaults takes effect on restart
     symbol=_cfg_sym,   interval=_cfg_ivl, period=_cfg_per, source=_cfg_src,
@@ -2108,12 +2108,13 @@ with panel_col:
 # Broker panel
 render_broker_panel(df=df, rec=rec, ma_cross_result=st.session_state.ma_cross_result)
 
-# Auto-refresh: use st.fragment rerun where available so only the data
-# fetching reruns without causing the full page to fade/flash.
-# Falls back to st.rerun() on older Streamlit versions.
-if st.session_state.auto_refresh:
+# Auto-refresh: only trigger after the page has fully loaded at least once
+# (last_refresh > 0 ensures we never rerun on first render before data loads).
+# rsec comes from the selectbox widget; clamp to minimum 10s as a safety net.
+_rsec_safe = max(rsec, 10) if rsec else 30
+if st.session_state.auto_refresh and st.session_state.last_refresh > 0:
     elapsed   = time.time() - st.session_state.last_refresh
-    remaining = max(0, rsec - elapsed)
+    remaining = max(0, _rsec_safe - elapsed)
     if remaining <= 0:
         # Clear caches so fresh data is fetched
         _DATA_CACHE.clear(); clear_cache(); clear_ingestion_cache(); clear_commodity_cache()
@@ -2121,7 +2122,6 @@ if st.session_state.auto_refresh:
         st.rerun()
     else:
         # Show a subtle countdown that doesn't interrupt the user
-        _refresh_pct = int((1 - remaining / rsec) * 100)
         st.markdown(
             f'<div style="position:fixed;bottom:8px;right:12px;font-family:var(--mono);'
             f'font-size:9px;color:var(--text-mute);z-index:999;letter-spacing:.06em">'
