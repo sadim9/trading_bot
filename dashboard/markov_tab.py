@@ -219,7 +219,6 @@ def _fig_transition_matrix(m: dict, th: dict) -> go.Figure:
         showscale=True,
         colorbar=dict(
             title="P(i→j)",
-            titlefont=dict(color=th["text_dim"], size=10),
             tickfont=dict(color=th["text_dim"], size=9),
             thickness=10,
         ),

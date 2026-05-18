@@ -203,16 +203,16 @@ input:focus, textarea:focus { border-color: var(--border-lit) !important; box-sh
 }
 [data-testid="baseButton-primary"]:hover { opacity: 0.85 !important; }
 [data-testid="baseButton-secondary"] {
-  background: var(--bg-hover) !important;
-  border: 1px solid var(--border-lit) !important;
-  color: var(--text-pri) !important;
-  font-family: var(--mono) !important;
+  background: #1E2D45 !important;
+  border: 1px solid #2A3F6F !important;
+  color: #DCE4F5 !important;
+  font-family: 'IBM Plex Mono', monospace !important;
   font-size: 11px !important;
   font-weight: 500 !important;
   letter-spacing: 0.06em !important;
   border-radius: 3px !important;
 }
-[data-testid="baseButton-secondary"]:hover { background: var(--bg-card) !important; border-color: var(--border-acc) !important; color: #fff !important; }
+[data-testid="baseButton-secondary"]:hover { background: #243450 !important; border-color: #3A5590 !important; color: #fff !important; }
 
 /* ── Selectbox ── */
 [data-baseweb="select"] { font-family: var(--mono) !important; }
@@ -1110,7 +1110,7 @@ if _n_pinned > 0:
 #  TOOLBAR ROW
 # ═══════════════════════════════════════════════════════════════════════════════
 with st.container():
-    st.markdown('<div style="padding:8px 12px;background:var(--bg-surface);border-bottom:1px solid var(--border)">', unsafe_allow_html=True)
+    st.markdown('<div style="padding:8px 12px;background:#0C1322;border-bottom:1px solid #1A2540">', unsafe_allow_html=True)
     t1,t2,t3,t4,t5,t6,t7,t8,t9,t10 = st.columns([2.2,1,1,1.1,1.3,0.7,0.7,0.7,0.7,0.7])
 
     sym  = t1.text_input("", value=st.session_state.symbol, placeholder="Symbol", label_visibility="collapsed", key="sym_toolbar")

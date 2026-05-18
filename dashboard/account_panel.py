@@ -124,7 +124,7 @@ def render_account_panel():
     """, unsafe_allow_html=True)
 
     from config import CONFIG
-    _src_opts = ["kraken", "kucoin", "yfinance", "bitoasis", "binance", "coingecko", "sample"]
+    _src_opts = ["kraken", "kucoin", "yfinance", "twelvedata", "bitoasis", "binance", "coingecko", "tradingview", "sample"]
 
     d1, d2, d3, d4 = st.columns(4)
     def_sym = d1.text_input(

@@ -1,0 +1,18 @@
+[server]
+headless = true
+enableCORS = false
+enableXsrfProtection = false
+port = 8501
+
+[browser]
+serverAddress = "theapextraders.com"
+serverPort = 443
+gatherUsageStats = false
+
+[theme]
+base = "dark"
+backgroundColor = "#080D1A"
+secondaryBackgroundColor = "#0C1322"
+textColor = "#DCE4F5"
+primaryColor = "#4B9FFF"
+font = "monospace"
