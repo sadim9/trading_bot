@@ -1504,8 +1504,6 @@ with chart_col:
                     doubleClick="reset+autosize",
                     showTips=False,
                     responsive=True,
-                    # Mobile: enable touch pan/zoom
-                    scrollZoom=True,
                 ))
 
     with tab_bt:
@@ -2125,4 +2123,21 @@ render_broker_panel(df=df, rec=rec, ma_cross_result=st.session_state.ma_cross_re
 
 # Auto-refresh: only trigger after the page has fully loaded at least once
 # (last_refresh > 0 ensures we never rerun on first render before data loads).
-# rsec comes from the selectbox widget; clamp to minimum 10s as a saf
+# rsec comes from the selectbox widget; clamp to minimum 10s as a safety net.
+_rsec_safe = max(rsec, 10) if rsec else 30
+if st.session_state.auto_refresh and st.session_state.last_refresh > 0:
+    elapsed   = time.time() - st.session_state.last_refresh
+    remaining = max(0, _rsec_safe - elapsed)
+    if remaining <= 0:
+        # Clear caches so fresh data is fetched
+        _DATA_CACHE.clear(); clear_cache(); clear_ingestion_cache(); clear_commodity_cache()
+        st.session_state.df = None  # force re-fetch on next render
+        st.rerun()
+    else:
+        # Show a subtle countdown that doesn't interrupt the user
+        st.markdown(
+            f'<div style="position:fixed;bottom:8px;right:12px;font-family:var(--mono);'
+            f'font-size:9px;color:var(--text-mute);z-index:999;letter-spacing:.06em">'
+            f'AUTO ⟳ {int(remaining)}s</div>',
+            unsafe_allow_html=True,
+        )
