@@ -203,15 +203,16 @@ input:focus, textarea:focus { border-color: var(--border-lit) !important; box-sh
 }
 [data-testid="baseButton-primary"]:hover { opacity: 0.85 !important; }
 [data-testid="baseButton-secondary"] {
-  background: var(--bg-card) !important;
+  background: var(--bg-hover) !important;
   border: 1px solid var(--border-lit) !important;
-  color: var(--text-sec) !important;
+  color: var(--text-pri) !important;
   font-family: var(--mono) !important;
   font-size: 11px !important;
+  font-weight: 500 !important;
   letter-spacing: 0.06em !important;
   border-radius: 3px !important;
 }
-[data-testid="baseButton-secondary"]:hover { border-color: var(--border-acc) !important; color: var(--text-pri) !important; }
+[data-testid="baseButton-secondary"]:hover { background: var(--bg-card) !important; border-color: var(--border-acc) !important; color: #fff !important; }
 
 /* ── Selectbox ── */
 [data-baseweb="select"] { font-family: var(--mono) !important; }
@@ -1117,10 +1118,12 @@ with st.container():
         ivl_opts = ["1m","5m","15m","30m","1h","4h","1d","1wk"]
     elif st.session_state.source == "yfinance":
         ivl_opts = ["1m","5m","15m","1h","1d","1wk"]
+    elif st.session_state.source == "tradingview":
+        ivl_opts = ["1m","3m","5m","15m","30m","1h","2h","4h","1d","1wk"]
     else:
         ivl_opts = ["1h","1d"]
     ivl  = t2.selectbox("", ivl_opts, index=ivl_opts.index(st.session_state.interval) if st.session_state.interval in ivl_opts else 0, label_visibility="collapsed")
-    _src_opts = ["kraken","kucoin","yfinance","twelvedata","bitoasis","binance","coingecko","sample"]
+    _src_opts = ["kraken","kucoin","yfinance","twelvedata","bitoasis","binance","coingecko","tradingview","sample"]
     src  = t3.selectbox("", _src_opts, index=_src_opts.index(st.session_state.source) if st.session_state.source in _src_opts else 0, label_visibility="collapsed")
     per_opts = ["7d","30d","60d"] if ivl in ("1m","5m","15m") else ["6mo","1y","2y","5y"]
     # Remember the last period per interval group so it survives tab switches
@@ -1498,10 +1501,11 @@ with chart_col:
                         format="png", width=1920, height=1080,
                         filename=f"{sym}_chart_{datetime.now().strftime('%Y%m%d_%H%M')}",
                     ),
-                    # Smooth rendering
                     doubleClick="reset+autosize",
                     showTips=False,
                     responsive=True,
+                    # Mobile: enable touch pan/zoom
+                    scrollZoom=True,
                 ))
 
     with tab_bt:
@@ -1645,61 +1649,72 @@ with chart_col:
                 )
 
     with tab_mkv:
-        _mkv_df = st.session_state.get("df")
-        if _mkv_df is None or len(_mkv_df) < 40:
-            st.info("⏳ Loading chart data for Markov analysis...", icon="📊")
-            _DATA_CACHE.clear(); clear_cache(); clear_ingestion_cache(); clear_commodity_cache()
-            _mkv_lim = max(_period_to_candles(per, ivl), 200)
-            _mkv_df, _mkv_warn = _load(sym, ivl, per, src, force=True, crypto_limit=_mkv_lim)
-            if _mkv_warn: st.warning(_mkv_warn)
-            if _mkv_df is not None:
-                st.session_state.df = _mkv_df
-                st.session_state.last_refresh = time.time()
-        render_markov_tab(st.session_state.get("df"), st.session_state.get("symbol", ""))
+        try:
+            _mkv_df = st.session_state.get("df")
+            if _mkv_df is None or len(_mkv_df) < 40:
+                st.info("⏳ Loading chart data for Markov analysis...", icon="📊")
+                _DATA_CACHE.clear(); clear_cache(); clear_ingestion_cache(); clear_commodity_cache()
+                _mkv_lim = max(_period_to_candles(per, ivl), 200)
+                _mkv_df, _mkv_warn = _load(sym, ivl, per, src, force=True, crypto_limit=_mkv_lim)
+                if _mkv_warn: st.warning(_mkv_warn)
+                if _mkv_df is not None:
+                    st.session_state.df = _mkv_df
+                    st.session_state.last_refresh = time.time()
+            render_markov_tab(st.session_state.get("df"), st.session_state.get("symbol", ""))
+        except Exception as _mkv_err:
+            st.error(f"Markov tab error: {_mkv_err}", icon="⚠️")
 
     with tab_log:
-        # ── Trade Journal (full P&L tracking) ───────────────────────────
-        render_trade_journal()
+        try:
+            # ── Trade Journal (full P&L tracking) ───────────────────────────
+            render_trade_journal()
 
-        # ── Market data snapshot (collapsible) ──────────────────────────
-        with st.expander("Current Market Data / Indicator Snapshot", expanded=False):
-            ind_cols = ["Close", "ema_fast", "ema_slow", "rsi", "macd",
-                        "macd_hist", "bb_pct", "vol_ratio", "atr"]
-            try:
-                st.dataframe(
-                    df[[c for c in ind_cols if c in df.columns]].tail(30).round(4).iloc[::-1],
-                    width="stretch",
-                )
-            except Exception:
-                # Fallback if DataFrame component CSS fails to load
-                st.table(
-                    df[[c for c in ind_cols if c in df.columns]].tail(15).round(4).iloc[::-1]
-                )
+            # ── Market data snapshot (collapsible) ──────────────────────────
+            with st.expander("Current Market Data / Indicator Snapshot", expanded=False):
+                ind_cols = ["Close", "ema_fast", "ema_slow", "rsi", "macd",
+                            "macd_hist", "bb_pct", "vol_ratio", "atr"]
+                try:
+                    st.dataframe(
+                        df[[c for c in ind_cols if c in df.columns]].tail(30).round(4).iloc[::-1],
+                        width="stretch",
+                    )
+                except Exception:
+                    st.table(
+                        df[[c for c in ind_cols if c in df.columns]].tail(15).round(4).iloc[::-1]
+                    )
+        except Exception as _log_err:
+            st.error(f"Log tab error: {_log_err}", icon="⚠️")
 
     with tab_acct:
-        render_account_panel()
+        try:
+            render_account_panel()
+        except Exception as _acct_err:
+            st.error(f"Accounts tab error: {_acct_err}", icon="⚠️")
 
     with tab_wl:
-        st.markdown(
-            '''<div style="font-family:var(--mono);font-size:11px;color:var(--text-sec);
-            margin-bottom:12px;padding:8px 12px;background:var(--bg-surface);
-            border-radius:4px;border-left:3px solid var(--amber)">
-            <b style="color:var(--text-pri)">Multi-Ticker Scanner</b> — runs signals across all symbols simultaneously.
-            Click <b>⟳ SCAN ALL</b> to analyse. Click <b>Switch →</b> on any row to load that ticker in the main chart.
-            Signals fire alerts to Discord/WhatsApp automatically.
-            </div>''',
-            unsafe_allow_html=True,
-        )
-        _clicked = render_watchlist(
-            main_symbol   = st.session_state.get("symbol", "BTC-USD"),
-            main_source   = st.session_state.get("source",   "yfinance"),
-            main_interval = st.session_state.get("interval", "1h"),
-        )
-        if _clicked:
-            st.session_state["symbol"]      = _clicked
-            st.session_state["sym_toolbar"] = _clicked  # sync toolbar widget
-            st.session_state["df"]          = None   # force reload
-            st.rerun()
+        try:
+            st.markdown(
+                '''<div style="font-family:var(--mono);font-size:11px;color:var(--text-sec);
+                margin-bottom:12px;padding:8px 12px;background:var(--bg-surface);
+                border-radius:4px;border-left:3px solid var(--amber)">
+                <b style="color:var(--text-pri)">Multi-Ticker Scanner</b> — runs signals across all symbols simultaneously.
+                Click <b>⟳ SCAN ALL</b> to analyse. Click <b>Switch →</b> on any row to load that ticker in the main chart.
+                Signals fire alerts to Discord/WhatsApp automatically.
+                </div>''',
+                unsafe_allow_html=True,
+            )
+            _clicked = render_watchlist(
+                main_symbol   = st.session_state.get("symbol", "BTC-USD"),
+                main_source   = st.session_state.get("source",   "yfinance"),
+                main_interval = st.session_state.get("interval", "1h"),
+            )
+            if _clicked:
+                st.session_state["symbol"]      = _clicked
+                st.session_state["sym_toolbar"] = _clicked  # sync toolbar widget
+                st.session_state["df"]          = None   # force reload
+                st.rerun()
+        except Exception as _wl_err:
+            st.error(f"Watchlist tab error: {_wl_err}", icon="⚠️")
 
 # ──────────────── RIGHT: SIGNAL PANEL ─────────────────────────────────────────
 with panel_col:
@@ -2110,21 +2125,4 @@ render_broker_panel(df=df, rec=rec, ma_cross_result=st.session_state.ma_cross_re
 
 # Auto-refresh: only trigger after the page has fully loaded at least once
 # (last_refresh > 0 ensures we never rerun on first render before data loads).
-# rsec comes from the selectbox widget; clamp to minimum 10s as a safety net.
-_rsec_safe = max(rsec, 10) if rsec else 30
-if st.session_state.auto_refresh and st.session_state.last_refresh > 0:
-    elapsed   = time.time() - st.session_state.last_refresh
-    remaining = max(0, _rsec_safe - elapsed)
-    if remaining <= 0:
-        # Clear caches so fresh data is fetched
-        _DATA_CACHE.clear(); clear_cache(); clear_ingestion_cache(); clear_commodity_cache()
-        st.session_state.df = None  # force re-fetch on next render
-        st.rerun()
-    else:
-        # Show a subtle countdown that doesn't interrupt the user
-        st.markdown(
-            f'<div style="position:fixed;bottom:8px;right:12px;font-family:var(--mono);'
-            f'font-size:9px;color:var(--text-mute);z-index:999;letter-spacing:.06em">'
-            f'AUTO ⟳ {int(remaining)}s</div>',
-            unsafe_allow_html=True,
-        )
+# rsec comes from the selectbox widget; clamp to minimum 10s as a saf

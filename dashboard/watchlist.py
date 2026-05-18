@@ -35,10 +35,27 @@ PRESET_LISTS = {
     "Gulf / MENA":       ["AAPL", "MSFT", "ARAMCO.SR", "EMAAR.DU", "FAB.AD"],
 }
 
+# Hardcoded dark-theme colors — CSS variables don't resolve inside
+# Streamlit expanders, so we use explicit hex values here.
+_C = {
+    "green":    "#00c9a7",
+    "red":      "#ff4560",
+    "amber":    "#f5a623",
+    "blue":     "#4c9be8",
+    "text_pri": "#dce4f5",
+    "text_sec": "#8899bb",
+    "text_mute":"#4a5a7a",
+    "bg":       "#080e1a",
+    "bg_surf":  "#0c1322",
+    "bg_panel": "#101828",
+    "border":   "#1a2540",
+    "border_lit":"#2a3f6f",
+}
+
 SIG_STYLE = {
-    "BUY":  ("var(--green)", "▲ BUY",  "rgba(0,201,167,0.10)"),
-    "SELL": ("var(--red)",   "▼ SELL", "rgba(255,69,96,0.10)"),
-    "HOLD": ("var(--text-sec)", "◆ HOLD", "transparent"),
+    "BUY":  (_C["green"],    "▲ BUY",  "rgba(0,201,167,0.10)"),
+    "SELL": (_C["red"],      "▼ SELL", "rgba(255,69,96,0.10)"),
+    "HOLD": (_C["text_sec"], "◆ HOLD", "transparent"),
 }
 
 SCAN_CACHE_TTL = 60   # seconds
@@ -237,14 +254,14 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
     total = len(results)
 
     st.markdown(
-        f'<div style="display:flex;gap:16px;margin-bottom:10px;font-family:var(--mono);font-size:11px;'
-        f'padding:8px 12px;background:var(--bg-surface);border-radius:4px;'
-        f'border:1px solid var(--border)">'
-        f'<span style="color:var(--green)">▲ BUY: <b>{buys}</b></span>'
-        f'<span style="color:var(--red)">▼ SELL: <b>{sells}</b></span>'
-        f'<span style="color:var(--text-sec)">◆ HOLD: <b>{holds}</b></span>'
-        f'<span style="color:var(--text-mute)">/ {total} tickers scanned</span>'
-        f'<span style="color:var(--text-mute);margin-left:auto">{wl_interval} · {wl_source.upper()}</span>'
+        f'<div style="display:flex;gap:16px;margin-bottom:10px;font-family:monospace;font-size:11px;'
+        f'padding:8px 12px;background:#0c1322;border-radius:4px;'
+        f'border:1px solid #1a2540">'
+        f'<span style="color:#00c9a7">▲ BUY: <b>{buys}</b></span>'
+        f'<span style="color:#ff4560">▼ SELL: <b>{sells}</b></span>'
+        f'<span style="color:#8899bb">◆ HOLD: <b>{holds}</b></span>'
+        f'<span style="color:#4a5a7a">/ {total} tickers scanned</span>'
+        f'<span style="color:#4a5a7a;margin-left:auto">{wl_interval} · {wl_source.upper()}</span>'
         f'</div>',
         unsafe_allow_html=True,
     )
@@ -253,9 +270,9 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
     GRID = "140px 95px 75px 80px 60px 65px 55px 65px 80px 85px"
     st.markdown(
         f'<div style="display:grid;grid-template-columns:{GRID};'
-        f'gap:4px;padding:5px 8px;font-family:var(--mono);font-size:9px;'
-        f'letter-spacing:.12em;text-transform:uppercase;color:var(--text-mute);'
-        f'border-bottom:1px solid var(--border)">'
+        f'gap:4px;padding:5px 8px;font-family:monospace;font-size:9px;'
+        f'letter-spacing:.12em;text-transform:uppercase;color:#4a5a7a;'
+        f'border-bottom:1px solid #1a2540">'
         f'<span>SYMBOL</span><span>PRICE</span><span>CHANGE</span>'
         f'<span>SIGNAL</span><span>SCORE</span><span>RSI</span>'
         f'<span>TREND</span><span>MA CROSS</span><span>VOL</span>'
@@ -272,10 +289,10 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
         if err:
             st.markdown(
                 f'<div style="display:grid;grid-template-columns:{GRID};gap:4px;'
-                f'padding:6px 8px;font-family:var(--mono);font-size:10px;'
-                f'border-bottom:1px solid var(--border);opacity:0.4">'
-                f'<span style="color:var(--text-pri)">{sym}</span>'
-                f'<span style="color:var(--red)" style="grid-column:2/-1">Error: {err}</span>'
+                f'padding:6px 8px;font-family:monospace;font-size:10px;'
+                f'border-bottom:1px solid #1a2540;opacity:0.4">'
+                f'<span style="color:#dce4f5">{sym}</span>'
+                f'<span style="color:#ff4560" style="grid-column:2/-1">Error: {err}</span>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
@@ -296,25 +313,25 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
         pos_pct = r.get("pos_pct",  0)
 
         sig_col, sig_label, sig_bg = SIG_STYLE.get(sig, SIG_STYLE["HOLD"])
-        chg_col  = "var(--green)" if chg >= 0 else "var(--red)"
+        chg_col  = "#00c9a7" if chg >= 0 else "#ff4560"
         chg_arr  = "▲" if chg >= 0 else "▼"
-        rsi_col  = "var(--red)" if rsi > 70 else ("var(--green)" if rsi < 30 else "var(--text-sec)")
-        mac_col  = ("var(--green)" if "GOLDEN" in mac or mac == "Bull"
-                     else "var(--red)"  if "DEATH"  in mac or mac == "Bear"
-                     else "var(--text-sec)")
-        ema_col  = "var(--green)" if ema_tr == "↑" else "var(--red)"
-        vol_col  = "var(--amber)" if vol_r > 2.0 else "var(--text-sec)"
+        rsi_col  = "#ff4560" if rsi > 70 else ("#00c9a7" if rsi < 30 else "#8899bb")
+        mac_col  = ("#00c9a7" if "GOLDEN" in mac or mac == "Bull"
+                     else "#ff4560"  if "DEATH"  in mac or mac == "Bear"
+                     else "#8899bb")
+        ema_col  = "#00c9a7" if ema_tr == "↑" else "#ff4560"
+        vol_col  = "#f5a623" if vol_r > 2.0 else "#8899bb"
         row_bg   = "rgba(75,159,255,0.06)" if is_active else sig_bg
-        border   = "border-left:3px solid var(--blue)" if is_active else ""
+        border   = "border-left:3px solid #4c9be8" if is_active else ""
 
         st.markdown(
             f'<div style="display:grid;grid-template-columns:{GRID};'
-            f'gap:4px;padding:7px 8px;font-family:var(--mono);font-size:11px;'
-            f'background:{row_bg};border-bottom:1px solid var(--border);{border};'
+            f'gap:4px;padding:7px 8px;font-family:monospace;font-size:11px;'
+            f'background:{row_bg};border-bottom:1px solid #1a2540;{border};'
             f'border-radius:2px;align-items:center">'
-            f'<span style="color:var(--text-pri);font-weight:{"700" if is_active else "400"}">'
+            f'<span style="color:#dce4f5;font-weight:{"700" if is_active else "400"}">'
             f'{"▶ " if is_active else ""}{sym}</span>'
-            f'<span style="color:var(--text-pri)">${price:,.4f}</span>'
+            f'<span style="color:#dce4f5">${price:,.4f}</span>'
             f'<span style="color:{chg_col}">{chg_arr}{abs(chg):.2f}%</span>'
             f'<span style="color:{sig_col};font-weight:600">{sig_label}</span>'
             f'<span style="color:{sig_col}">{score:+.2f}</span>'
@@ -453,24 +470,24 @@ def _render_ticker_detail(r: dict, sym: str, sig: str, score: float, conf: float
     breakdown = r.get("breakdown", {})
     if breakdown:
         st.markdown(
-            '<div style="font-family:var(--mono);font-size:9px;letter-spacing:.12em;'
-            'text-transform:uppercase;color:var(--text-mute);margin:6px 0 4px">STRATEGY BREAKDOWN</div>',
+            '<div style="font-family:monospace;font-size:9px;letter-spacing:.12em;'
+            'text-transform:uppercase;color:#4a5a7a;margin:6px 0 4px">STRATEGY BREAKDOWN</div>',
             unsafe_allow_html=True,
         )
         wmap = {"trend": 0.30, "momentum": 0.25, "mean_reversion": 0.25, "ai_model": 0.20, "markov_chains": 1.0}
         for sname, sdata in breakdown.items():
             sc   = sdata.get("score", 0)
             pct  = int((sc + 1) / 2 * 100)
-            fill = "var(--green)" if sc > 0.1 else ("var(--red)" if sc < -0.1 else "var(--border-lit)")
+            fill = "#00c9a7" if sc > 0.1 else ("#ff4560" if sc < -0.1 else "#2a3f6f")
             w    = wmap.get(sname, 0.25)
             st.markdown(
                 f'<div style="margin:3px 0">'
                 f'<div style="display:flex;justify-content:space-between;'
-                f'font-family:var(--mono);font-size:10px;color:var(--text-sec)">'
+                f'font-family:monospace;font-size:10px;color:#8899bb">'
                 f'<span>{sname.replace("_"," ").title()} · {w:.0%}</span>'
                 f'<span style="color:{fill}">{sc:+.3f}</span>'
                 f'</div>'
-                f'<div style="height:3px;background:var(--border);border-radius:2px">'
+                f'<div style="height:3px;background:#1a2540;border-radius:2px">'
                 f'<div style="width:{pct}%;height:100%;background:{fill};border-radius:2px"></div>'
                 f'</div></div>',
                 unsafe_allow_html=True,
@@ -483,13 +500,9 @@ def _render_ticker_detail(r: dict, sym: str, sig: str, score: float, conf: float
             for line in reasoning:
                 if line and not line.startswith("["):
                     st.markdown(
-                        f'<div style="font-family:var(--mono);font-size:10px;'
-                        f'color:var(--text-sec);padding:2px 0">{line}</div>',
+                        f'<div style="font-family:monospace;font-size:10px;'
+                        f'color:#8899bb;padding:2px 0">{line}</div>',
                         unsafe_allow_html=True,
                     )
 
-    # ── Indicator snapshot ────────────────────────────────────────────────
-    ind_c1, ind_c2, ind_c3 = st.columns(3)
-    ind_c1.metric("RSI 14",    f"{rsi:.1f}",  delta="Overbought" if rsi > 70 else ("Oversold" if rsi < 30 else "Neutral"))
-    ind_c2.metric("Vol Ratio", f"{vol_r:.2f}×", delta="Spike" if vol_r > 2 else "")
-    ind_c3.metric("ATR",       f"${atr:.4f}" if atr > 0 else "—")
+    # ── Indicator snapshot ─�
