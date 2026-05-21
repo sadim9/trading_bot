@@ -154,6 +154,8 @@ def build_chart(
     show_markov:    bool = False,
     # Theme
     light_mode: bool = False,
+    # Timezone: offset from UTC in hours (e.g. 3.0 for UTC+3)
+    tz_offset_hours: float = 0.0,
 ) -> "go.Figure":
     """
     Build the full institutional chart figure.
@@ -181,6 +183,28 @@ def build_chart(
     T = LIGHT_THEME if light_mode else THEME
 
     df = df.tail(n_candles).copy()
+
+    # ── Apply timezone offset to x-axis ──────────────────────────────────────
+    # Shift all timestamps so the chart displays in the user's local timezone.
+    # The index is stored as naive UTC; we add the offset so Plotly labels
+    # show local time rather than UTC.
+    if tz_offset_hours != 0.0:
+        from pandas import Timedelta
+        df.index = df.index + Timedelta(hours=tz_offset_hours)
+        if signals:
+            signals = [
+                {**s, "date": s["date"] + Timedelta(hours=tz_offset_hours)
+                 if hasattr(s.get("date"), "total_seconds") or hasattr(s.get("date"), "year")
+                 else s["date"]}
+                for s in signals
+            ]
+        if markov_signals:
+            markov_signals = [
+                {**s, "date": s["date"] + Timedelta(hours=tz_offset_hours)
+                 if hasattr(s.get("date"), "total_seconds") or hasattr(s.get("date"), "year")
+                 else s["date"]}
+                for s in markov_signals
+            ]
 
     # ── MA Cross computation ──────────────────────────────────────────────────
     # Computed fresh from the sliced df so cross detection is accurate
@@ -719,13 +743,20 @@ def build_chart(
     )
 
     for i in range(1, 5):
+        # Build timezone label for x-axis title on the bottom row
+        if tz_offset_hours == 0:
+            _tz_label = "UTC"
+        else:
+            _tz_sign  = "+" if tz_offset_hours >= 0 else ""
+            _tz_label = f"UTC{_tz_sign}{tz_offset_hours:g}"
         fig.update_xaxes(
             axis_style,
             row=i, col=1,
             showticklabels=(i == 4),
-            automargin=False,   # automargin causes layout recalc = jitter
-            fixedrange=False,   # allow zoom/pan on x-axis
-            # Smooth scrolling: don't snap to bars
+            automargin=False,
+            fixedrange=False,
+            title_text=_tz_label if i == 4 else None,
+            title_font=dict(size=9, color=T["text_dim"]),
             tickformatstops=[
                 dict(dtickrange=[None, 60000],    value="%H:%M:%S"),
                 dict(dtickrange=[60000, 3600000], value="%H:%M"),

@@ -979,6 +979,9 @@ _defaults = dict(
     # ── Multi-ticker pinned tabs ─────────────────────────────────────
     # List of pinned symbols (shown as tabs above the toolbar)
     pinned_tickers=[_cfg_sym],
+    # Per-ticker full settings saved at pin time:
+    # { symbol: {source, interval, period, strategy_mode, tz_offset_hours} }
+    pinned_ticker_settings={},
     # Per-ticker independent state cache:
     # { symbol: {df, rec, signal, entry_price, close_price, last_load, interval, period, source} }
     _tabs_cache={},
@@ -1197,16 +1200,26 @@ if _n_pinned > 0:
             st.session_state._tabs_cache = _tc
             # Restore cached state for the clicked ticker (if available)
             if _t != _active:
-                _cached = _tc.get(_t, {})
+                _cached      = _tc.get(_t, {})
+                _pin_settings = st.session_state.get("pinned_ticker_settings", {})
+                _saved        = _pin_settings.get(_t, {})
                 st.session_state.symbol = _t
-                if _cached.get("df") is not None:
-                    st.session_state.df          = _cached["df"]
-                    st.session_state.rec         = _cached.get("rec")
-                    st.session_state.interval    = _cached.get("interval", st.session_state.interval)
-                    st.session_state.period      = _cached.get("period",   st.session_state.period)
-                    st.session_state.source      = _cached.get("source",   st.session_state.source)
-                else:
-                    st.session_state.df = None   # force fresh load
+                # Restore saved toolbar settings for this pin
+                if _saved.get("source"):
+                    st.session_state.source        = _saved["source"]
+                    st.session_state.interval      = _saved.get("interval", st.session_state.interval)
+                    st.session_state.period        = _saved.get("period",   st.session_state.period)
+                    st.session_state.strategy_mode = _saved.get("strategy_mode", st.session_state.strategy_mode)
+                    st.session_state.tz_offset_hours = float(_saved.get("tz_offset_hours", st.session_state.get("tz_offset_hours", 3.0)))
+                elif _cached.get("df") is not None:
+                    # Fall back to runtime cache if no saved settings
+                    st.session_state.df       = _cached["df"]
+                    st.session_state.rec      = _cached.get("rec")
+                    st.session_state.interval = _cached.get("interval", st.session_state.interval)
+                    st.session_state.period   = _cached.get("period",   st.session_state.period)
+                    st.session_state.source   = _cached.get("source",   st.session_state.source)
+                # Always force fresh data load on tab switch
+                st.session_state.df = None
                 st.rerun()
 
     # ─ Unpin active ticker button (only show if >1 pinned)
@@ -1266,7 +1279,18 @@ with st.container():
         _new_sym = sym.strip().upper() or sym.strip()
         if _new_sym and _new_sym not in st.session_state.pinned_tickers:
             st.session_state.pinned_tickers = st.session_state.pinned_tickers + [_new_sym]
-            st.toast(f"📌 {_new_sym} pinned")
+            # Save full toolbar settings for this pin so they restore on click
+            _pin_settings = st.session_state.get("pinned_ticker_settings", {})
+            _pin_settings[_new_sym] = {
+                "source":        src,
+                "interval":      ivl,
+                "period":        per,
+                "strategy_mode": strategy_mode,
+                "tz_offset_hours": float(st.session_state.get("tz_offset_hours", 3.0)),
+            }
+            st.session_state["pinned_ticker_settings"] = _pin_settings
+            save_settings()
+            st.toast(f"Pinned {_new_sym} with {src}/{ivl}/{per}/{strategy_mode}")
             st.rerun()
 
     st.markdown('</div>', unsafe_allow_html=True)
@@ -1530,7 +1554,14 @@ _last_bar_ts   = df.index[-1] if len(df) > 0 else None
 _data_age_hrs  = (datetime.now() - _last_bar_ts.to_pydatetime().replace(tzinfo=None)).total_seconds() / 3600 if _last_bar_ts is not None else 999
 _data_stale    = _data_age_hrs > 2   # data older than 2 hours is stale
 _status_cls    = "qt-status-stale" if _stale or _data_stale else "qt-status-live"
-_last_bar_str = _last_bar_ts.strftime("%b %d %H:%M") if _last_bar_ts is not None else "?"
+# Shift last bar timestamp to user's local timezone for display
+_tz_offset_h = float(st.session_state.get("tz_offset_hours", 3.0))
+if _last_bar_ts is not None:
+    from datetime import timedelta as _td
+    _last_bar_local = _last_bar_ts.to_pydatetime().replace(tzinfo=None) + _td(hours=_tz_offset_h)
+    _last_bar_str = _last_bar_local.strftime("%b %d %H:%M")
+else:
+    _last_bar_str = "?"
 _status_label = "STALE" if (_stale or _data_stale) else "LIVE"
 # Use user's saved timezone offset for display (not server TZ)
 _tz_str = tz_label()
@@ -1591,6 +1622,7 @@ with chart_col:
                 markov_signals =mkv_sigs,
                 show_markov    =_is_markov_mode,
                 light_mode     =st.session_state.get("theme", "light") == "light",
+                tz_offset_hours=float(st.session_state.get("tz_offset_hours", 3.0)),
             )
             # Patch BB visibility
             if not show_bb:

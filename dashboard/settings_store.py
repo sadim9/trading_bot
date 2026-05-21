@@ -41,6 +41,7 @@ _PERSIST_KEYS = [
     "refresh_interval",
     "auto_refresh",
     "pinned_tickers",
+    "pinned_ticker_settings",
     "strategy_mode",
     "_tv_username",
     "_tv_password",
