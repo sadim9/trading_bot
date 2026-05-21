@@ -359,6 +359,7 @@ def load_data(
     csv_path: Optional[str] = None,
     crypto_limit: int = 1000,
     twelvedata_api_key: str = "",
+    exchange: Optional[str] = None,
 ) -> pd.DataFrame:
     """
     Unified entry point: fetch raw OHLCV → add all indicators.
@@ -431,7 +432,8 @@ def load_data(
 
     elif source == "tradingview":
         from data.tradingview_feed import fetch_tradingview
-        raw = fetch_tradingview(symbol, interval=interval, period=period)
+        raw = fetch_tradingview(symbol, interval=interval, period=period,
+                                exchange=exchange or None)
 
     elif source == "csv":
         if not csv_path:

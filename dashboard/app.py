@@ -1054,10 +1054,12 @@ def _load(symbol, interval, period, source, force=False, crypto_limit=500):
     _td_key = st.session_state.get("_twelvedata_api_key", "") or CONFIG.data.twelvedata_api_key or ""
 
     # ── Tier 1: requested source ──────────────────────────────────
+    # Pass TradingView exchange override if the user has specified one
+    _tv_exch = st.session_state.get("_tv_exchange_override") if source == "tradingview" else None
     try:
         df = load_data(symbol, interval=interval, period=period,
                        source=source, crypto_limit=crypto_limit,
-                       twelvedata_api_key=_td_key)
+                       twelvedata_api_key=_td_key, exchange=_tv_exch)
         if df is not None and len(df) >= 2:
             _DATA_CACHE[key] = (df, None, now)
             return df, None
@@ -1294,6 +1296,39 @@ with st.container():
             st.rerun()
 
     st.markdown('</div>', unsafe_allow_html=True)
+
+# ── TradingView exchange selector ─────────────────────────────────────────────
+# Shows a compact row below the toolbar when TradingView is the selected source.
+# Auto-detect covers most common symbols; exotic ones may need an explicit exchange.
+if src == "tradingview":
+    _tv_exch_presets = [
+        "Auto-detect", "NASDAQ", "NYSE", "AMEX", "BINANCE", "KRAKEN",
+        "OANDA", "TVC", "DJ", "SP500", "NSE", "BSE", "LSE",
+    ]
+    _saved_tv_exch = st.session_state.get("_tv_exchange", "Auto-detect")
+    _tv_exch_idx = _tv_exch_presets.index(_saved_tv_exch) if _saved_tv_exch in _tv_exch_presets else 0
+    _tvc1, _tvc2, _tvc3 = st.columns([1.2, 2, 5.8])
+    _tvc1.markdown(
+        '<div style="font-family:monospace;font-size:10px;color:#4a5a7a;padding-top:8px">TV EXCHANGE</div>',
+        unsafe_allow_html=True,
+    )
+    _tv_exch_sel = _tvc2.selectbox(
+        "", _tv_exch_presets, index=_tv_exch_idx,
+        label_visibility="collapsed", key="_tv_exchange_sel",
+        help="TradingView exchange/market. Auto-detect works for most symbols. "
+             "Override if you get 'no data' errors — e.g. NASDAQ for US stocks, TVC for gold/oil.",
+    )
+    _tv_custom_exch = _tvc3.text_input(
+        "", placeholder="Or type a custom exchange: EURONEXT, SGX, TSX, MOEX ...",
+        label_visibility="collapsed", key="_tv_exchange_custom",
+    )
+    # Custom text field takes priority; dropdown value used if not Auto-detect
+    _tv_exchange_override = (
+        _tv_custom_exch.strip().upper() if _tv_custom_exch.strip()
+        else (None if _tv_exch_sel == "Auto-detect" else _tv_exch_sel)
+    )
+    st.session_state["_tv_exchange"] = _tv_exch_sel
+    st.session_state["_tv_exchange_override"] = _tv_exchange_override
 
 # Hint about BitOasis credentials
 if src == "bitoasis" and not st.session_state.get("bitoasis_connected"):
