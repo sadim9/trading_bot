@@ -507,11 +507,12 @@ def render_account_panel():
     st.markdown('<div class="acct-title">📈 TRADINGVIEW — Data Connection</div>', unsafe_allow_html=True)
     st.markdown("""
     <div class="acct-how">
-      TradingView provides free historical OHLCV data via the unofficial tvdatafeed library.
-      Anonymous access works for most symbols but may be rate-limited. Logging in with a
-      free TradingView account gives higher rate limits and access to more symbols.<br><br>
-      <b>To get credentials:</b> Register a free account at <b>tradingview.com</b>.<br>
-      Leave blank to use anonymous (unauthenticated) access.
+      TradingView provides free historical OHLCV data (stocks, crypto, forex, commodities).<br>
+      <b>Anonymous access works without any login</b> — just select <code>tradingview</code> as
+      your source and click LOAD. Logging in gives higher rate limits and premium symbol access.<br><br>
+      &#9888; <b>Important:</b> Enter your TradingView <b>username</b> (not your email address).
+      Find it at <b>tradingview.com &rarr; Profile &rarr; @username</b>.<br>
+      Leave both fields blank to use anonymous (unauthenticated) access.
     </div>
     """, unsafe_allow_html=True)
 
@@ -519,48 +520,63 @@ def render_account_panel():
     _tv_pass = st.session_state.get("_tv_password", "")
     tv_col1, tv_col2 = st.columns(2)
     tv_username = tv_col1.text_input(
-        "TradingView Username", value=_tv_user,
-        placeholder="your_tv_username", key="tv_username_input",
+        "TradingView Username (not email)", value=_tv_user,
+        placeholder="e.g. john_trader  (NOT email)", key="tv_username_input",
+        help="Your TradingView @username. Do NOT use your email address.",
     )
     tv_password = tv_col2.text_input(
         "TradingView Password", value=_tv_pass,
-        placeholder="••••••••", type="password", key="tv_password_input",
+        placeholder="password", type="password", key="tv_password_input",
     )
 
+    if tv_username and "@" in tv_username:
+        st.warning("That looks like an email address. TradingView requires your username (e.g. john_trader), not your email. Find it at tradingview.com / Profile.")
+
     tv_col_a, tv_col_b = st.columns(2)
-    if tv_col_a.button("💾 Save TradingView Credentials", type="primary",
+    if tv_col_a.button("Save TradingView Credentials", type="primary",
                         use_container_width=True, key="tv_save_btn"):
         st.session_state["_tv_username"] = tv_username
         st.session_state["_tv_password"] = tv_password
         save_settings()
         if tv_username:
-            st.success(f"✅ TradingView credentials saved for user: {tv_username}")
+            st.success(f"TradingView credentials saved for: {tv_username}")
         else:
-            st.info("ℹ️ Credentials cleared — using anonymous TradingView access.")
+            st.info("Credentials cleared - using anonymous TradingView access.")
 
-    if tv_col_b.button("🔍 Test Connection", use_container_width=True, key="tv_test_btn"):
+    if tv_col_b.button("Test Connection", use_container_width=True, key="tv_test_btn"):
         with st.spinner("Testing TradingView connection..."):
             try:
                 from tvDatafeed import TvDatafeed, Interval as TvInterval
+                _use_anon = not tv_username
                 _tv = TvDatafeed(
                     username=tv_username or None,
                     password=tv_password or None,
                 )
                 _test = _tv.get_hist("BTCUSD", "BINANCE", interval=TvInterval.in_1_hour, n_bars=5)
                 if _test is not None and not _test.empty:
-                    _mode = f"authenticated as {tv_username}" if tv_username else "anonymous"
-                    st.success(f"✅ TradingView connected ({_mode}) — {len(_test)} bars received.")
+                    _mode = "anonymous" if _use_anon else f"authenticated as @{tv_username}"
+                    st.success(f"TradingView connected ({_mode}) - {len(_test)} bars received.")
                 else:
-                    st.warning("⚠️ Connected but received no data. Try a different symbol.")
+                    st.warning("Connected but no data for BTCUSD/BINANCE. The feed is working - try a different symbol.")
             except ImportError:
-                st.error("tvdatafeed-enhanced not installed. Rebuild the Docker container.")
+                st.error("tvdatafeed-enhanced not installed. Run: docker compose build frontend")
             except Exception as e:
-                st.error(f"❌ TradingView connection failed: {e}")
+                _err = str(e)
+                if any(x in _err.lower() for x in ["login", "credentials", "password"]):
+                    st.error(
+                        "TradingView login failed. Common causes:\n"
+                        "1. You used your email instead of your username - use @username from tradingview.com/profile\n"
+                        "2. Wrong password\n"
+                        "3. 2FA is enabled (not supported by this library)\n\n"
+                        "Fix: clear both fields and Save to use anonymous mode."
+                    )
+                else:
+                    st.error(f"TradingView connection failed: {_err}. Try clearing credentials to use anonymous access.")
 
     _tv_status = bool(st.session_state.get("_tv_username", ""))
     st.markdown(_status_badge(_tv_status,
-        f"Authenticated as {st.session_state.get('_tv_username', '')}",
-        "Anonymous access (no login)"
+        f"Authenticated as @{st.session_state.get('_tv_username', '')}",
+        "Anonymous access (no login) - works for most symbols"
     ), unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 

@@ -157,7 +157,27 @@ def fetch_tradingview(
             _tv_user = os.getenv("TRADINGVIEW_USERNAME") or None
             _tv_pass = os.getenv("TRADINGVIEW_PASSWORD") or None
 
-        tv = TvDatafeed(username=_tv_user, password=_tv_pass)
+        # Email-as-username is a common mistake — TradingView requires @username not email
+        if _tv_user and "@" in _tv_user:
+            import warnings as _w
+            _w.warn(
+                f"TradingView username looks like an email address. "
+                "Use your @username, not your email. Falling back to anonymous access.",
+                UserWarning, stacklevel=2
+            )
+            _tv_user = None
+            _tv_pass = None
+
+        # Try authenticated; fall back to anonymous if login fails
+        try:
+            tv = TvDatafeed(username=_tv_user, password=_tv_pass)
+        except Exception as _login_err:
+            _msg = str(_login_err).lower()
+            if _tv_user and any(x in _msg for x in ["login", "credentials", "password", "auth"]):
+                tv = TvDatafeed(username=None, password=None)
+            else:
+                raise
+
         raw = tv.get_hist(symbol=tv_sym, exchange=exch,
                           interval=tv_interval, n_bars=min(n_bars, 5000))
     except Exception as e:

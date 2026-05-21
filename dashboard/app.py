@@ -812,9 +812,111 @@ if st.session_state.get("theme", "light") == "light":
   --blue-dim:   rgba(21,85,162,0.10);
   --purple:     #6030BE;
 }
-/* Make Streamlit native widgets look right on light bg */
-[data-testid="stAlert"] { background: var(--bg-card) !important; }
-[data-testid="stToast"] { color: var(--text-pri) !important; }
+
+/* ── Light mode: force Streamlit app background ── */
+html, body, .stApp, [class*="css"] {
+  background-color: #F2F6FC !important;
+  color: #0B1929 !important;
+}
+section.main > div { background: #F2F6FC !important; }
+
+/* ── Light mode: all labels, captions, text visible ── */
+label, p, span, div,
+[data-testid="stWidgetLabel"],
+[data-testid="stCaptionContainer"],
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] span,
+[data-testid="stText"] {
+  color: #0B1929 !important;
+}
+
+/* ── Light mode: input / select boxes ── */
+input, textarea,
+[data-baseweb="select"] > div,
+[data-baseweb="input"] > div {
+  background: #FFFFFF !important;
+  color: #0B1929 !important;
+  border-color: #BDC9DC !important;
+}
+input::placeholder, textarea::placeholder { color: #7090AE !important; }
+
+/* ── Light mode: selectbox dropdown popover + options ── */
+[data-baseweb="popover"],
+[data-baseweb="popover"] * {
+  background: #FFFFFF !important;
+  color: #0B1929 !important;
+}
+[data-baseweb="option"] {
+  background: #FFFFFF !important;
+  color: #0B1929 !important;
+}
+[data-baseweb="option"]:hover,
+[data-baseweb="option"][aria-selected="true"] {
+  background: #DBE4F5 !important;
+  color: #0B1929 !important;
+}
+
+/* ── Light mode: metric cards ── */
+[data-testid="metric-container"] {
+  background: #FFFFFF !important;
+  border-color: #BDC9DC !important;
+}
+[data-testid="metric-container"] label { color: #365070 !important; }
+[data-testid="metric-container"] [data-testid="metric-value"] { color: #0B1929 !important; }
+
+/* ── Light mode: tabs ── */
+[data-testid="stTabs"] button { color: #365070 !important; }
+[data-testid="stTabs"] button[aria-selected="true"] { color: #1555A2 !important; border-bottom-color: #1555A2 !important; }
+[data-testid="stTabs"] > div:first-child { border-bottom-color: #BDC9DC !important; }
+
+/* ── Light mode: expander ── */
+[data-testid="stExpander"] { background: #FFFFFF !important; border-color: #BDC9DC !important; }
+[data-testid="stExpander"] summary { color: #365070 !important; }
+[data-testid="stExpander"] summary p { color: #365070 !important; }
+
+/* ── Light mode: sidebar ── */
+[data-testid="stSidebar"] { background: #E8EEF8 !important; border-right-color: #BDC9DC !important; }
+
+/* ── Light mode: toggle label ── */
+[data-testid="stToggle"] > label { color: #365070 !important; }
+
+/* ── Light mode: dataframe ── */
+[data-testid="stDataFrame"] th { background: #E8EEF8 !important; color: #365070 !important; }
+[data-testid="stDataFrame"] td { color: #0B1929 !important; }
+
+/* ── Light mode: alerts / toasts ── */
+[data-testid="stAlert"] { background: #FFFFFF !important; color: #0B1929 !important; }
+[data-testid="stToast"] { background: #FFFFFF !important; color: #0B1929 !important; }
+
+/* ── Light mode: scrollbar ── */
+::-webkit-scrollbar-track { background: #F2F6FC; }
+::-webkit-scrollbar-thumb { background: #879EC2; }
+
+/* ── Light mode: acct-section / account panel cards ── */
+.acct-section { background: #FFFFFF !important; border-color: #BDC9DC !important; }
+.acct-title   { color: #0B1929 !important; }
+.acct-sub     { color: #7090AE !important; }
+.acct-how     { background: #E8EEF8 !important; color: #365070 !important; border-left-color: #1555A2 !important; }
+.acct-ok      { color: #00735C !important; }
+.acct-fail    { color: #C0001E !important; }
+.acct-info    { color: #1555A2 !important; }
+
+/* ── Light mode: qt-section headers ── */
+.qt-section   { color: #7090AE !important; border-bottom-color: #BDC9DC !important; }
+.qt-kpi-label { color: #7090AE !important; }
+.qt-kpi-value { color: #0B1929 !important; }
+.qt-mini-stat-label { color: #7090AE !important; }
+.qt-mini-stat-value { color: #0B1929 !important; }
+.qt-score-label     { color: #365070 !important; }
+.qt-status-bar      { background: #F2F6FC !important; color: #7090AE !important; border-bottom-color: #BDC9DC !important; }
+.qt-status-live     { color: #00735C !important; }
+.qt-status-stale    { color: #C0001E !important; }
+.qt-ticker-tabs     { background: #E8EEF8 !important; border-bottom-color: #BDC9DC !important; }
+.qt-ticker-tab      { color: #0B1929 !important; }
+.qt-ticker-tab.active { background: #FFFFFF !important; border-bottom-color: #1555A2 !important; }
+.qt-ticker-tab-sym  { color: #365070 !important; }
+.qt-ticker-tab-px   { color: #365070 !important; }
+.qt-alert-time      { color: #7090AE !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1110,7 +1212,7 @@ if _n_pinned > 0:
 #  TOOLBAR ROW
 # ═══════════════════════════════════════════════════════════════════════════════
 with st.container():
-    st.markdown('<div style="padding:8px 12px;background:#0C1322;border-bottom:1px solid #1A2540">', unsafe_allow_html=True)
+    st.markdown('<div style="padding:8px 12px;background:var(--bg-surface);border-bottom:1px solid var(--border)">', unsafe_allow_html=True)
     t1,t2,t3,t4,t5,t6,t7,t8,t9,t10 = st.columns([2.2,1,1,1.1,1.3,0.7,0.7,0.7,0.7,0.7])
 
     sym  = t1.text_input("", value=st.session_state.symbol, placeholder="Symbol", label_visibility="collapsed", key="sym_toolbar")
