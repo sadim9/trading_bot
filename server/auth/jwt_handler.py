@@ -9,7 +9,6 @@ a long random secret for simpler deployments.
 
 from __future__ import annotations
 
-import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -17,30 +16,43 @@ from typing import Optional
 from jose import JWTError, jwt
 from fastapi import HTTPException, status
 
-_SECRET_KEY_ENV = os.getenv("SECRET_KEY", "")
+from server.config import get_settings as _get_settings
+
 _INSECURE_PLACEHOLDERS = {"", "CHANGE_ME_USE_SECRETS_TOKEN_HEX_64", "REPLACE_WITH_64_CHAR_HEX_STRING"}
 
-if _SECRET_KEY_ENV in _INSECURE_PLACEHOLDERS:
-    # Security: refuse to start with a missing or placeholder key.
-    # A random fallback (secrets.token_hex) would silently invalidate all
-    # tokens on every restart — much harder to diagnose than a hard failure.
-    raise RuntimeError(
-        "SECRET_KEY is not set or is still the placeholder value. "
-        "Generate one with: python -c \"import secrets; print(secrets.token_hex(64))\" "
-        "and add it to your .env file."
-    )
+def _load_secret() -> str:
+    """Load SECRET_KEY from Settings (which reads .env).
+    Deferred to a function so the RuntimeError fires at request time with a
+    clear 500 traceback rather than killing the import chain silently."""
+    key = _get_settings().secret_key
+    if key in _INSECURE_PLACEHOLDERS:
+        raise RuntimeError(
+            "SECRET_KEY is not set or is still the placeholder value. "
+            "Generate one with: python -c \"import secrets; print(secrets.token_hex(64))\" "
+            "and add it to your .env file."
+        )
+    return key
 
-SECRET_KEY      = _SECRET_KEY_ENV
 ALGORITHM       = "HS256"
-ACCESS_EXPIRE   = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
-REFRESH_EXPIRE  = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+
+def _settings():
+    return _get_settings()
+
+def _secret() -> str:
+    return _load_secret()
+
+def _access_expire() -> int:
+    return _settings().access_token_expire_minutes
+
+def _refresh_expire() -> int:
+    return _settings().refresh_token_expire_days
 
 
 # ─── TOKEN CREATION ───────────────────────────────────────────────────────────
 
 def create_access_token(user_id: str, role: str, username: str) -> str:
     """Create a short-lived JWT access token."""
-    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_EXPIRE)
+    expire = datetime.now(timezone.utc) + timedelta(minutes=_access_expire())
     payload = {
         "sub":      user_id,
         "role":     role,
@@ -49,12 +61,12 @@ def create_access_token(user_id: str, role: str, username: str) -> str:
         "exp":      expire,
         "iat":      datetime.now(timezone.utc),
     }
-    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    return jwt.encode(payload, _secret(), algorithm=ALGORITHM)
 
 
 def create_refresh_token(user_id: str) -> str:
     """Create a long-lived refresh token."""
-    expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_EXPIRE)
+    expire = datetime.now(timezone.utc) + timedelta(days=_refresh_expire())
     payload = {
         "sub":  user_id,
         "type": "refresh",
@@ -62,7 +74,7 @@ def create_refresh_token(user_id: str) -> str:
         "iat":  datetime.now(timezone.utc),
         "jti":  secrets.token_hex(16),   # unique token ID for revocation
     }
-    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    return jwt.encode(payload, _secret(), algorithm=ALGORITHM)
 
 
 # ─── TOKEN VERIFICATION ───────────────────────────────────────────────────────
@@ -78,7 +90,7 @@ def decode_token(token: str, expected_type: str = "access") -> dict:
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, _secret(), algorithms=[ALGORITHM])
     except JWTError:
         raise credentials_exception
 

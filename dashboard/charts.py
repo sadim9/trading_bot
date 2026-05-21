@@ -677,6 +677,8 @@ def build_chart(
         dragmode="pan",
         xaxis_rangeslider_visible=False,
         height=860,
+        # Mobile touch support — allow pinch-to-zoom and two-finger pan
+        modebar=dict(orientation="v"),
         # uirevision: keeps zoom/pan state across Streamlit reruns.
         # Only reset when the symbol changes.
         uirevision=f"chart_{symbol}",

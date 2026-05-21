@@ -30,5 +30,6 @@ discord.py>=2.3.0
 # tvdatafeed-enhanced: PyPI-published successor to the defunct StreamAlpha/tvdatafeed.
 # Maintained by rongardF/StreamAlpha, supports Python 3.11+, no git clone needed.
 tvdatafeed-enhanced>=2.2.1
+websocket-client>=1.7.0   # required by tvdatafeed-enhanced (imports websocket.create_connection)
 # tradingview-ta: Real-time technical analysis summaries from TradingView
 tradingview-ta>=3.3.0
