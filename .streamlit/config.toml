@@ -10,9 +10,14 @@ serverPort = 443
 gatherUsageStats = false
 
 [theme]
-base = "dark"
-backgroundColor = "#080D1A"
-secondaryBackgroundColor = "#0C1322"
-textColor = "#DCE4F5"
-primaryColor = "#4B9FFF"
+# base = "light" so Streamlit's native widget internals (selectbox popovers,
+# dropdowns, input borders) render with light-friendly defaults.
+# Our dashboard/app.py CSS fully overrides colours for both dark and light modes —
+# this just ensures the underlying widget engine doesn't hard-lock to dark,
+# which caused selectbox options to be invisible (dark text on dark popover).
+base = "light"
+backgroundColor = "#F2F6FC"
+secondaryBackgroundColor = "#E8EEF8"
+textColor = "#0B1929"
+primaryColor = "#1555A2"
 font = "monospace"

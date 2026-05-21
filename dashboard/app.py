@@ -214,9 +214,18 @@ input:focus, textarea:focus { border-color: var(--border-lit) !important; box-sh
 }
 [data-testid="baseButton-secondary"]:hover { background: #243450 !important; border-color: #3A5590 !important; color: #fff !important; }
 
-/* ── Selectbox ── */
+/* ── Selectbox + Popover dropdown (all modes) ── */
 [data-baseweb="select"] { font-family: var(--mono) !important; }
-[data-baseweb="popover"] { background: var(--bg-card) !important; border: 1px solid var(--border-lit) !important; }
+[data-baseweb="popover"] {
+  background: var(--bg-card) !important;
+  border: 1px solid var(--border-lit) !important;
+}
+[data-baseweb="popover"] * { color: var(--text-pri) !important; background: var(--bg-card) !important; }
+[data-baseweb="menu"]     { background: var(--bg-card) !important; }
+[data-baseweb="option"]   { background: var(--bg-card) !important; color: var(--text-pri) !important; }
+[data-baseweb="option"]:hover { background: var(--bg-hover) !important; color: var(--text-pri) !important; }
+li[role="option"]         { background: var(--bg-card) !important; color: var(--text-pri) !important; }
+li[role="option"]:hover   { background: var(--bg-hover) !important; }
 
 /* ── Slider ── */
 [data-testid="stSlider"] > div > div > div { background: var(--border-lit) !important; }
