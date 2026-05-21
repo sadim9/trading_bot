@@ -442,4 +442,8 @@ def load_data(
         raw = generate_sample_data(symbol)
 
     df_with_indicators = add_technical_indicators(raw)
-    return convert_to_local_time(df_with_indicators)
+    # NOTE: Timezone conversion is handled at display-time by build_chart()
+    # using the user's configured tz_offset_hours. Do NOT apply server-local
+    # timezone here — that causes double-shifting when the chart also applies
+    # the user offset.
+    return df_with_indicators

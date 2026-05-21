@@ -203,8 +203,13 @@ def scan_watchlist(
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futures = {
             ex.submit(
-                _scan_one, sym, interval, source,
-                sym_strategies.get(sym, {}).get("strategy", "multi")
+                _scan_one,
+                sym,
+                # per-symbol interval override, fallback to global interval
+                sym_strategies.get(sym, {}).get("interval_override", "(default)") if sym_strategies.get(sym, {}).get("interval_override", "(default)") != "(default)" else interval,
+                # per-symbol source override, fallback to global source
+                sym_strategies.get(sym, {}).get("source_override", "(default)") if sym_strategies.get(sym, {}).get("source_override", "(default)") != "(default)" else source,
+                sym_strategies.get(sym, {}).get("strategy", "multi"),
             ): sym
             for sym in symbols
         }
@@ -282,16 +287,18 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
             unsafe_allow_html=True,
         )
         cfg_changed = False
-        hdr1, hdr2, hdr3, hdr4 = st.columns([2, 2, 1.5, 1])
+        hdr1, hdr2, hdr3, hdr4, hdr5 = st.columns([1.5, 1.8, 1.5, 1.5, 0.8])
         hdr1.markdown('<span style="font-family:monospace;font-size:9px;color:#4a5a7a">SYMBOL</span>', unsafe_allow_html=True)
         hdr2.markdown('<span style="font-family:monospace;font-size:9px;color:#4a5a7a">STRATEGY</span>', unsafe_allow_html=True)
-        hdr3.markdown('<span style="font-family:monospace;font-size:9px;color:#4a5a7a">SOURCE OVERRIDE</span>', unsafe_allow_html=True)
-        hdr4.markdown('<span style="font-family:monospace;font-size:9px;color:#4a5a7a">NOTIFY</span>', unsafe_allow_html=True)
+        hdr3.markdown('<span style="font-family:monospace;font-size:9px;color:#4a5a7a">INTERVAL</span>', unsafe_allow_html=True)
+        hdr4.markdown('<span style="font-family:monospace;font-size:9px;color:#4a5a7a">SOURCE OVERRIDE</span>', unsafe_allow_html=True)
+        hdr5.markdown('<span style="font-family:monospace;font-size:9px;color:#4a5a7a">NOTIFY</span>', unsafe_allow_html=True)
 
+        _ivl_opts_sym = ["(default)", "5m", "15m", "1h", "4h", "1d"]
         src_opts_sym = ["(default)"] + _wl_sources
         for sym in symbols:
             sym_data = wl_cfg.get(sym, {})
-            col1, col2, col3, col4 = st.columns([2, 2, 1.5, 1])
+            col1, col2, col3, col4, col5 = st.columns([1.5, 1.8, 1.5, 1.5, 0.8])
             col1.markdown(
                 f'<div style="font-family:monospace;font-size:11px;color:#dce4f5;'
                 f'padding-top:6px">{sym}</div>', unsafe_allow_html=True
@@ -304,25 +311,34 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
             )
             new_strat = _STRATEGY_VALS[_STRATEGY_OPTS.index(new_strat_label)]
 
+            cur_ivl_override = sym_data.get("interval_override", "(default)")
+            ivl_ov_idx = _ivl_opts_sym.index(cur_ivl_override) if cur_ivl_override in _ivl_opts_sym else 0
+            new_ivl_ov = col3.selectbox(
+                f"ivl_{sym}", _ivl_opts_sym, index=ivl_ov_idx,
+                label_visibility="collapsed", key=f"wl_ivl_{sym}",
+            )
+
             cur_src_override = sym_data.get("source_override", "(default)")
             src_ov_idx = src_opts_sym.index(cur_src_override) if cur_src_override in src_opts_sym else 0
-            new_src_ov = col3.selectbox(
+            new_src_ov = col4.selectbox(
                 f"src_{sym}", src_opts_sym, index=src_ov_idx,
                 label_visibility="collapsed", key=f"wl_src_{sym}",
             )
 
             cur_notify = sym_data.get("notify", True)
-            new_notify = col4.toggle("", value=cur_notify, key=f"wl_notify_{sym}")
+            new_notify = col5.toggle("", value=cur_notify, key=f"wl_notify_{sym}")
 
             # Detect changes
             if (new_strat != cur_strat
+                    or new_ivl_ov != cur_ivl_override
                     or new_src_ov != cur_src_override
                     or new_notify != cur_notify):
                 wl_cfg[sym] = {
-                    "strategy":        new_strat,
-                    "source_override": new_src_ov,
+                    "strategy":         new_strat,
+                    "interval_override": new_ivl_ov,
+                    "source_override":  new_src_ov,
                     "source": new_src_ov if new_src_ov != "(default)" else wl_source,
-                    "notify":          new_notify,
+                    "notify":           new_notify,
                 }
                 cfg_changed = True
 

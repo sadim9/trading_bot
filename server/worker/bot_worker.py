@@ -116,11 +116,14 @@ async def run_signal_cycle(symbols: list, watchlist_cfg: dict, engine):
             try:
                 sym_cfg   = watchlist_cfg.get(symbol, {})
                 sym_mode  = sym_cfg.get("strategy", STRATEGY_MODE)
-                sym_src   = sym_cfg.get("source", DATA_SOURCE)
+                _src_ov   = sym_cfg.get("source_override", "(default)")
+                sym_src   = _src_ov if _src_ov != "(default)" else sym_cfg.get("source", DATA_SOURCE)
+                _ivl_ov   = sym_cfg.get("interval_override", "(default)")
+                sym_ivl   = _ivl_ov if _ivl_ov != "(default)" else CONFIG.data.default_interval
                 do_notify = sym_cfg.get("notify", True)
 
                 log.info(f"Processing {symbol} [mode={sym_mode}, src={sym_src}]")
-                df  = load_data(symbol, interval=CONFIG.data.default_interval,
+                df  = load_data(symbol, interval=sym_ivl,
                                 period=CONFIG.data.default_period, source=sym_src)
                 agg = SignalAggregator(CONFIG, strategy_mode=sym_mode)
                 rec = agg.analyse(df, symbol)

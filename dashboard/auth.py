@@ -6,9 +6,19 @@ Provides:
   - require_auth()      — guard; redirects to login if not authenticated
   - get_api_client()    — returns an authenticated APIClient
   - logout()            — clears session state
+
+Token persistence: the access token is saved to user_settings.json under
+_auth_token_saved / _auth_token_expiry so browser refreshes do not log the
+user out. On each page load require_auth() restores the token from disk
+if the saved copy is still within its TTL.
 """
 
 from __future__ import annotations
+
+import json
+import os
+import time
+from pathlib import Path
 
 import streamlit as st
 from dashboard.api_client import APIClient
@@ -18,6 +28,65 @@ from dashboard.api_client import APIClient
 _TOKEN_KEY    = "_auth_token"
 _USER_KEY     = "_auth_user"
 _REFRESH_KEY  = "_auth_refresh"
+
+# ── Token persistence ──────────────────────────────────────────────────────────
+_SETTINGS_DIR  = Path(os.getenv("SETTINGS_DIR", "/app/logs"))
+_TOKEN_FILE    = _SETTINGS_DIR / "session_token.json"
+# How long (seconds) to keep the saved token valid after it was last written.
+# JWT tokens usually expire in 30 min–8 h; we treat a saved token as valid
+# for 8 hours so a normal trading session doesn't trigger a re-login.
+_TOKEN_TTL     = 8 * 3600
+
+
+def _save_token(token: str, refresh: str, user: dict):
+    """Persist the current session token to disk so browser refreshes survive."""
+    try:
+        for dirpath in [_SETTINGS_DIR, Path(".cache")]:
+            try:
+                dirpath.mkdir(parents=True, exist_ok=True)
+                path = dirpath / "session_token.json"
+                tmp  = path.with_suffix(".tmp")
+                tmp.write_text(json.dumps({
+                    "token":   token,
+                    "refresh": refresh,
+                    "user":    user,
+                    "saved_at": time.time(),
+                }, indent=2), encoding="utf-8")
+                tmp.replace(path)
+                return
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+
+def _load_token() -> dict | None:
+    """
+    Load a previously saved session token if it is still within TTL.
+    Returns dict with keys token/refresh/user, or None.
+    """
+    for path in [_SETTINGS_DIR / "session_token.json",
+                 Path(".cache/session_token.json")]:
+        try:
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                saved_at = float(data.get("saved_at", 0))
+                if time.time() - saved_at < _TOKEN_TTL:
+                    return data
+        except Exception:
+            pass
+    return None
+
+
+def _clear_saved_token():
+    """Delete the persisted token file (called on explicit logout)."""
+    for path in [_SETTINGS_DIR / "session_token.json",
+                 Path(".cache/session_token.json")]:
+        try:
+            if path.exists():
+                path.unlink()
+        except Exception:
+            pass
 
 
 def is_authenticated() -> bool:
@@ -33,6 +102,7 @@ def get_api_client() -> APIClient:
 def logout():
     for key in [_TOKEN_KEY, _USER_KEY, _REFRESH_KEY]:
         st.session_state.pop(key, None)
+    _clear_saved_token()
     st.rerun()
 
 
@@ -109,13 +179,16 @@ def show_login_page():
                 client = APIClient()
                 try:
                     resp = client.login(username, password)
-                    st.session_state[_TOKEN_KEY]   = resp["access_token"]
-                    st.session_state[_REFRESH_KEY] = resp["refresh_token"]
-                    st.session_state[_USER_KEY]    = {
+                    _user_dict = {
                         "user_id":  resp["user_id"],
                         "username": resp["username"],
                         "role":     resp["role"],
                     }
+                    st.session_state[_TOKEN_KEY]   = resp["access_token"]
+                    st.session_state[_REFRESH_KEY] = resp["refresh_token"]
+                    st.session_state[_USER_KEY]    = _user_dict
+                    # Persist token so browser refreshes don't log the user out
+                    _save_token(resp["access_token"], resp.get("refresh_token", ""), _user_dict)
                     st.rerun()
                 except RuntimeError as e:
                     st.error(str(e))
@@ -148,6 +221,20 @@ def show_login_page():
 
 
 def require_auth():
-    """Call at the top of any page that requires authentication."""
+    """
+    Call at the top of any page that requires authentication.
+
+    On browser refresh Streamlit loses session state. This function first
+    tries to restore the saved token from disk before falling back to the
+    login form, so users don't get logged out by a normal page refresh.
+    """
     if not is_authenticated():
+        # Try to restore from disk before showing the login form
+        saved = _load_token()
+        if saved and saved.get("token"):
+            st.session_state[_TOKEN_KEY]   = saved["token"]
+            st.session_state[_REFRESH_KEY] = saved.get("refresh", "")
+            st.session_state[_USER_KEY]    = saved.get("user", {})
+            # Restored — no need to show login page
+            return
         show_login_page()
