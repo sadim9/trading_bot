@@ -1,0 +1,411 @@
+// ============================================================================
+// Markov Plus Quant Framework — TradingView Pine Script v6
+// ============================================================================
+// Strategy based on the Markov Plus Quant Framework:
+//   Core Entry Conditions (both must hold simultaneously):
+//     (1) Delta(w) = P_hat(w) - Q(w) >= eps   [arbitrage gap, eq. 2.2]
+//     (2) P[j*, j*]                  >= tau    [state persistence, eq. 2.3]
+//
+// Enhancements:
+//   • Market Regime Detection via stationary distribution π
+//   • N-Step Ahead Forecasting (P^n blend)
+//   • π-Edge structural advantage
+//   • Regime-adjusted signal scaling
+//   • MA Cross confirmation filter
+//   • RSI extremes filter
+//
+// Usage:
+//   Add to chart as Strategy. Tune n_states, tau, eps for your instrument.
+//   Works on any timeframe; tested on 1h/4h crypto and daily stocks.
+// ============================================================================
+
+//@version=6
+strategy(
+    title         = "Markov Plus Quant Framework",
+    shorttitle    = "MKV+",
+    overlay       = true,
+    default_qty_type  = strategy.percent_of_equity,
+    default_qty_value = 10,
+    initial_capital   = 100000,
+    commission_type   = strategy.commission.percent,
+    commission_value  = 0.1,
+    slippage          = 2,
+    pyramiding        = 0,
+    calc_on_every_tick = false
+)
+
+// ── Inputs ────────────────────────────────────────────────────────────────────
+int    n_states     = input.int(8,    "Number of States (N)",   minval=4,  maxval=20, group="Markov Core")
+float  tau          = input.float(0.87, "Persistence Threshold τ",  minval=0.5, maxval=0.99, step=0.01, group="Markov Core")
+float  eps          = input.float(0.05, "Arbitrage Gap ε",          minval=0.01, maxval=0.30, step=0.01, group="Markov Core")
+int    lookback     = input.int(200,  "Lookback Bars",           minval=50, maxval=500, group="Markov Core")
+int    n_step       = input.int(3,    "N-Step Forecast Horizon", minval=2,  maxval=10,  group="Markov Core")
+float  nstep_weight = input.float(0.35, "N-Step Blend Weight",  minval=0.0, maxval=1.0, step=0.05, group="Markov Core")
+float  regime_bull  = input.float(0.55, "Regime Bull Threshold", minval=0.5, maxval=0.80, step=0.01, group="Markov Core")
+float  regime_bear  = input.float(0.55, "Regime Bear Threshold", minval=0.5, maxval=0.80, step=0.01, group="Markov Core")
+
+int    ma_short     = input.int(9,    "MA Short Period", minval=2,  maxval=50, group="Filters")
+int    ma_long      = input.int(21,   "MA Long Period",  minval=10, maxval=200, group="Filters")
+bool   use_ma_filter= input.bool(true, "Use MA Cross Filter",   group="Filters")
+bool   use_rsi_filter = input.bool(false, "Use RSI Extreme Filter", group="Filters")
+int    rsi_period   = input.int(14,   "RSI Period",     minval=5, maxval=50, group="Filters")
+float  rsi_ob       = input.float(70, "RSI Overbought", minval=60, maxval=90, group="Filters")
+float  rsi_os       = input.float(30, "RSI Oversold",   minval=10, maxval=40, group="Filters")
+
+float  sl_pct       = input.float(2.0, "Stop Loss %",   minval=0.5, maxval=10.0, step=0.5, group="Risk")
+float  tp_pct       = input.float(4.0, "Take Profit %", minval=1.0, maxval=20.0, step=0.5, group="Risk")
+
+bool   show_signals  = input.bool(true,  "Show Signal Markers",   group="Display")
+bool   show_regime   = input.bool(true,  "Show Regime Background", group="Display")
+bool   show_levels   = input.bool(true,  "Show SL/TP Levels",     group="Display")
+color  col_buy  = input.color(#00C9A7, "BUY Color",  group="Display")
+color  col_sell = input.color(#FF4560, "SELL Color", group="Display")
+color  col_hold = input.color(#FFB800, "HOLD Color", group="Display")
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+// Quantile of a series over a rolling window
+quantile(src, len, q) =>
+    sorted = array.new_float(len)
+    for i = 0 to len - 1
+        array.set(sorted, i, src[i])
+    array.sort(sorted, order.ascending)
+    idx = math.floor(q * (len - 1))
+    array.get(sorted, math.min(idx, len - 1))
+
+// Digitize a value into [0, n_bins-1] given n_bins equally-spaced quantile edges
+digitize(val, returns_arr, n_bins) =>
+    step = 1.0 / n_bins
+    bin  = 0
+    for b = 1 to n_bins - 1
+        edge = quantile(returns_arr, array.size(returns_arr), b * step)
+        if val > edge
+            bin := b
+    math.min(bin, n_bins - 1)
+
+// ── Compute price returns array ───────────────────────────────────────────────
+var float[] returns_arr = array.new_float(0)
+
+float ret = close[1] != 0 ? (close - close[1]) / math.abs(close[1]) : 0.0
+
+// Maintain rolling window of returns (up to lookback)
+if bar_index >= 1
+    array.push(returns_arr, ret)
+    if array.size(returns_arr) > lookback
+        array.shift(returns_arr)
+
+// ── Build Transition Matrix (N x N) ──────────────────────────────────────────
+// We represent the NxN matrix as a flat array of size N*N
+// State sequence is computed from returns over the lookback window
+
+var float[] P_flat = array.new_float(n_states * n_states, 0.5)  // Laplace smoothed
+
+// Helper: get/set matrix element
+get_P(flat, i, j, n) => array.get(flat, i * n + j)
+set_P(flat, i, j, n, val) => array.set(flat, i * n + j, val)
+
+// Rebuild transition matrix from current returns window
+rebuild_matrix(arr, n) =>
+    // Reset with Laplace smoothing (0.5)
+    mat = array.new_float(n * n, 0.5)
+    sz  = array.size(arr)
+    if sz >= 2
+        for t = 0 to sz - 2
+            ri  = array.get(arr, t)
+            rj  = array.get(arr, t + 1)
+            si  = digitize(ri, arr, n)
+            sj  = digitize(rj, arr, n)
+            idx = si * n + sj
+            array.set(mat, idx, array.get(mat, idx) + 1.0)
+        // Row-normalize
+        for i = 0 to n - 1
+            row_sum = 0.0
+            for j = 0 to n - 1
+                row_sum += array.get(mat, i * n + j)
+            if row_sum > 0
+                for j = 0 to n - 1
+                    array.set(mat, i * n + j, array.get(mat, i * n + j) / row_sum)
+    mat
+
+// Stationary distribution via power iteration (simplified: 50 iterations)
+stationary_dist(mat, n) =>
+    pi = array.new_float(n, 1.0 / n)
+    for _iter = 0 to 49
+        pi_new = array.new_float(n, 0.0)
+        for i = 0 to n - 1
+            val = 0.0
+            for j = 0 to n - 1
+                val += array.get(pi, j) * array.get(mat, j * n + i)
+            array.set(pi_new, i, val)
+        pi := pi_new
+    pi
+
+// N-step matrix power (repeated squaring, capped at n_step ≤ 8)
+matrix_power(mat, n, steps) =>
+    // result = identity
+    result = array.new_float(n * n, 0.0)
+    for i = 0 to n - 1
+        array.set(result, i * n + i, 1.0)
+    base = array.copy(mat)
+    rem  = steps
+    for _bit = 0 to 7
+        if rem <= 0
+            break
+        if rem % 2 == 1
+            // result = result @ base
+            tmp = array.new_float(n * n, 0.0)
+            for i = 0 to n - 1
+                for j = 0 to n - 1
+                    v = 0.0
+                    for k = 0 to n - 1
+                        v += array.get(result, i * n + k) * array.get(base, k * n + j)
+                    array.set(tmp, i * n + j, v)
+            result := tmp
+        // base = base @ base
+        tmp2 = array.new_float(n * n, 0.0)
+        for i = 0 to n - 1
+            for j = 0 to n - 1
+                v = 0.0
+                for k = 0 to n - 1
+                    v += array.get(base, i * n + k) * array.get(base, k * n + j)
+                array.set(tmp2, i * n + j, v)
+        base := tmp2
+        rem  := math.floor(rem / 2)
+    result
+
+// ── Main Markov Calculation (runs every bar) ──────────────────────────────────
+var float mkv_score     = 0.0
+var string mkv_signal   = "HOLD"
+var string mkv_regime   = "SIDEWAYS"
+var bool   entry_ok     = false
+var float  gap_val      = 0.0
+var float  persist_val  = 0.0
+var float  p_hat_val    = 0.0
+var float  market_q_val = 0.0
+var float  pi_edge_val  = 0.0
+var int    cur_state_v  = 0
+var int    j_star_v     = 0
+var float  pi_bull_v    = 0.0
+var float  pi_bear_v    = 0.0
+
+arr_sz = array.size(returns_arr)
+
+if arr_sz >= 20
+    // Build matrix
+    mat  = rebuild_matrix(returns_arr, n_states)
+    // Stationary distribution
+    pi   = stationary_dist(mat, n_states)
+
+    mid_idx = math.floor(n_states / 2)
+    pi_bull = 0.0
+    pi_bear = 0.0
+    for b = 0 to n_states - 1
+        if b >= mid_idx
+            pi_bull += array.get(pi, b)
+        else
+            pi_bear += array.get(pi, b)
+
+    regime = pi_bull >= regime_bull ? "BULL" : pi_bear >= regime_bear ? "BEAR" : "SIDEWAYS"
+
+    // Current state
+    cur_ret  = array.get(returns_arr, arr_sz - 1)
+    cur_state = digitize(cur_ret, returns_arr, n_states)
+
+    // 1-step probabilities
+    j_star_1 = 0
+    p_hat_1  = 0.0
+    for j = 0 to n_states - 1
+        pj = get_P(mat, cur_state, j, n_states)
+        if pj > p_hat_1
+            p_hat_1  := pj
+            j_star_1 := j
+
+    persist_1 = get_P(mat, j_star_1, j_star_1, n_states)
+
+    // Market Q (price percentile in recent window)
+    lo50  = ta.lowest(close, 50)
+    hi50  = ta.highest(close, 50)
+    mkt_q = hi50 > lo50 ? (close - lo50) / (hi50 - lo50) : 0.5
+
+    gap_1    = p_hat_1 - mkt_q
+    cond_gap  = gap_1 >= eps
+    cond_pers = persist_1 >= tau
+
+    // N-step forecast
+    Pn       = matrix_power(mat, n_states, n_step)
+    j_star_n = 0
+    p_hat_n  = 0.0
+    for j = 0 to n_states - 1
+        pj = get_P(Pn, cur_state, j, n_states)
+        if pj > p_hat_n
+            p_hat_n  := pj
+            j_star_n := j
+
+    // Blended j*
+    j_star   = 0
+    p_blend  = 0.0
+    for j = 0 to n_states - 1
+        pj1 = get_P(mat, cur_state, j, n_states)
+        pjn = get_P(Pn,  cur_state, j, n_states)
+        blend = (1.0 - nstep_weight) * pj1 + nstep_weight * pjn
+        if blend > p_blend
+            p_blend  := blend
+            j_star   := j
+
+    // π-edge
+    pi_edge  = array.get(pi, j_star) - 1.0 / n_states
+
+    // Direction
+    is_bull   = j_star >= math.floor(n_states / 2.0)
+    reg_align = (is_bull and regime == "BULL") or (not is_bull and regime == "BEAR")
+
+    // Score computation
+    score = 0.0
+    if cond_gap and cond_pers
+        persist_room = math.max(1.0 - tau, 1e-6)
+        pf = math.min(math.max((persist_1 - tau) / persist_room, 0.0), 1.0)
+        gf = math.min(math.max((gap_1 - eps) / 0.30, 0.0), 1.0)
+        nstep_agree = j_star_n == j_star_1 ? 1.0 : 0.5
+        nstep_boost = nstep_weight * nstep_agree * p_hat_n
+        pi_boost    = math.min(math.max(pi_edge * 2.0, 0.0), 0.20)
+        mag = 0.40 * pf + 0.40 * gf + 0.10 * nstep_boost + 0.10 * pi_boost
+        mag := math.max(0.25, math.min(mag, 1.0))
+        reg_scale = reg_align ? 1.0 : regime == "SIDEWAYS" ? 0.6 : 0.3
+        mag := mag * reg_scale
+        score := is_bull ? mag : -mag
+
+    // Store for labels / plots
+    mkv_score     := score
+    mkv_signal    := score >= 0.20 ? "BUY" : score <= -0.20 ? "SELL" : "HOLD"
+    mkv_regime    := regime
+    entry_ok      := cond_gap and cond_pers
+    gap_val       := gap_1
+    persist_val   := persist_1
+    p_hat_val     := p_hat_1
+    market_q_val  := mkt_q
+    pi_edge_val   := pi_edge
+    cur_state_v   := cur_state
+    j_star_v      := j_star
+    pi_bull_v     := pi_bull
+    pi_bear_v     := pi_bear
+
+// ── Confirmation Filters ──────────────────────────────────────────────────────
+float sma_s = ta.sma(close, ma_short)
+float sma_l = ta.sma(close, ma_long)
+bool  ma_bull = sma_s > sma_l
+bool  ma_bear = sma_s < sma_l
+
+float rsi_v = ta.rsi(close, rsi_period)
+
+bool buy_filter  = true
+bool sell_filter = true
+if use_ma_filter
+    buy_filter  := ma_bull
+    sell_filter := ma_bear
+if use_rsi_filter
+    buy_filter  := buy_filter  and rsi_v < rsi_ob
+    sell_filter := sell_filter and rsi_v > rsi_os
+
+bool final_buy  = mkv_signal == "BUY"  and entry_ok and buy_filter
+bool final_sell = mkv_signal == "SELL" and entry_ok and sell_filter
+
+// ── Strategy Execution ────────────────────────────────────────────────────────
+if final_buy and strategy.position_size <= 0
+    strategy.entry("Long",  strategy.long)
+    if show_levels
+        strategy.exit("Long Exit", "Long",
+            stop  = close * (1 - sl_pct / 100),
+            limit = close * (1 + tp_pct / 100))
+
+if final_sell and strategy.position_size >= 0
+    strategy.entry("Short", strategy.short)
+    if show_levels
+        strategy.exit("Short Exit", "Short",
+            stop  = close * (1 + sl_pct / 100),
+            limit = close * (1 - tp_pct / 100))
+
+// ── Regime Background ─────────────────────────────────────────────────────────
+var color regime_bg = color.new(color.gray, 95)
+if show_regime
+    regime_bg := mkv_regime == "BULL" ? color.new(#00C9A7, 93) :
+                 mkv_regime == "BEAR" ? color.new(#FF4560, 93) :
+                                        color.new(color.gray, 97)
+    bgcolor(regime_bg, title="Regime Background")
+
+// ── Signal Markers ────────────────────────────────────────────────────────────
+plotshape(show_signals and final_buy,
+    title    = "BUY Signal",
+    style    = shape.triangleup,
+    location = location.belowbar,
+    color    = col_buy,
+    size     = size.normal,
+    text     = "MKV+\nBUY",
+    textcolor = col_buy)
+
+plotshape(show_signals and final_sell,
+    title    = "SELL Signal",
+    style    = shape.triangledown,
+    location = location.abovebar,
+    color    = col_sell,
+    size     = size.normal,
+    text     = "MKV+\nSELL",
+    textcolor = col_sell)
+
+// MA Cross lines
+plot(sma_s, title="SMA Short", color=color.new(#FF6D00, 0), linewidth=1)
+plot(sma_l, title="SMA Long",  color=color.new(#43A047, 0), linewidth=2)
+
+// MA Cross zone fill
+fill(
+    plot(sma_s, display=display.none),
+    plot(sma_l, display=display.none),
+    color = sma_s > sma_l ? color.new(#00C9A7, 90) : color.new(#FF4560, 90),
+    title = "MA Zone")
+
+// ── Score Table (top-right data window) ──────────────────────────────────────
+var table info_table = table.new(position.top_right, 2, 8,
+    bgcolor      = color.new(#0C1322, 15),
+    border_color = color.new(#1A2540, 0),
+    border_width = 1)
+
+if barstate.islast
+    sig_col = mkv_signal == "BUY" ? col_buy : mkv_signal == "SELL" ? col_sell : col_hold
+    reg_col = mkv_regime == "BULL" ? col_buy : mkv_regime == "BEAR" ? col_sell : col_hold
+
+    table.cell(info_table, 0, 0, "MKV+ SIGNAL",   text_color=#7A8BA8, text_size=size.tiny)
+    table.cell(info_table, 1, 0, mkv_signal,        text_color=sig_col,  text_size=size.small, text_font_face=font.family_monospace)
+
+    table.cell(info_table, 0, 1, "SCORE",          text_color=#7A8BA8, text_size=size.tiny)
+    table.cell(info_table, 1, 1, str.tostring(math.round(mkv_score, 3)), text_color=#DCE4F5, text_size=size.tiny)
+
+    table.cell(info_table, 0, 2, "REGIME",         text_color=#7A8BA8, text_size=size.tiny)
+    table.cell(info_table, 1, 2, mkv_regime,        text_color=reg_col,  text_size=size.tiny)
+
+    table.cell(info_table, 0, 3, "GAP Δ(w)",       text_color=#7A8BA8, text_size=size.tiny)
+    table.cell(info_table, 1, 3, str.tostring(math.round(gap_val, 4)),
+        text_color = gap_val >= eps ? col_buy : col_sell, text_size=size.tiny)
+
+    table.cell(info_table, 0, 4, "PERSIST P[j*]",  text_color=#7A8BA8, text_size=size.tiny)
+    table.cell(info_table, 1, 4, str.tostring(math.round(persist_val, 4)),
+        text_color = persist_val >= tau ? col_buy : col_sell, text_size=size.tiny)
+
+    table.cell(info_table, 0, 5, "ENTRY OK",       text_color=#7A8BA8, text_size=size.tiny)
+    table.cell(info_table, 1, 5, entry_ok ? "✓ YES" : "✗ NO",
+        text_color = entry_ok ? col_buy : #7A8BA8, text_size=size.tiny)
+
+    table.cell(info_table, 0, 6, "π-EDGE",         text_color=#7A8BA8, text_size=size.tiny)
+    table.cell(info_table, 1, 6, str.tostring(math.round(pi_edge_val, 4)),
+        text_color = pi_edge_val > 0 ? col_buy : col_sell, text_size=size.tiny)
+
+    table.cell(info_table, 0, 7, "RSI",            text_color=#7A8BA8, text_size=size.tiny)
+    table.cell(info_table, 1, 7, str.tostring(math.round(rsi_v, 1)),
+        text_color = rsi_v > rsi_ob ? col_sell : rsi_v < rsi_os ? col_buy : #DCE4F5,
+        text_size=size.tiny)
+
+// ── Alerts ───────────────────────────────────────────────────────────────────
+alertcondition(final_buy,  "MKV+ BUY",  "Markov Plus BUY signal on {{ticker}} @ {{close}}")
+alertcondition(final_sell, "MKV+ SELL", "Markov Plus SELL signal on {{ticker}} @ {{close}}")
+alertcondition(
+    mkv_regime != mkv_regime[1],
+    "MKV+ Regime Change",
+    "Markov Plus regime changed to {{plot_0}} on {{ticker}}")

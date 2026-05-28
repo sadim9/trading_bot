@@ -45,6 +45,7 @@ _PERSIST_KEYS = [
     "strategy_mode",
     "_tv_username",
     "_tv_password",
+    "planned_trade_amount",
 ]
 
 

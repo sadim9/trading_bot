@@ -136,6 +136,34 @@ def _support_resistance(df: pd.DataFrame, n_levels: int = 3) -> tuple[list, list
     return list(support), list(resist)
 
 
+_INTRADAY_INTERVALS = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h"}
+
+
+def _intraday_xrange(df: pd.DataFrame, interval: str) -> dict:
+    """
+    For intraday intervals default the visible x-axis range to the last
+    trading day so the chart opens at day view. The full dataset remains
+    loaded so panning/dragging backwards reveals previous days.
+
+    Returns a dict to be spread into the xaxis kwargs (may be empty for
+    daily/weekly intervals where no default range is needed).
+    """
+    if interval not in _INTRADAY_INTERVALS or len(df) < 2:
+        return {}
+    last_ts = df.index[-1]
+    # Last day boundary (midnight of the last bar's date)
+    try:
+        day_start = pd.Timestamp(last_ts.date())
+        # Add tz offset so the visible window aligns with local midnight
+        first_ts  = df.index[0]
+        # Give 30-minute padding before first bar of the day
+        x0 = day_start - pd.Timedelta(minutes=30)
+        x1 = last_ts   + pd.Timedelta(hours=1)
+        return {"range": [x0, x1]}
+    except Exception:
+        return {}
+
+
 def build_chart(
     df: pd.DataFrame,
     symbol: str,
@@ -156,6 +184,8 @@ def build_chart(
     light_mode: bool = False,
     # Timezone: offset from UTC in hours (e.g. 3.0 for UTC+3)
     tz_offset_hours: float = 0.0,
+    # Bar interval — used to set default x-axis range for intraday charts
+    interval: str = "1d",
 ) -> "go.Figure":
     """
     Build the full institutional chart figure.
@@ -711,12 +741,13 @@ def build_chart(
         xaxis=dict(
             rangeselector=dict(
                 buttons=[
-                    dict(count=1, label="1H",  step="hour",  stepmode="backward"),
-                    dict(count=4, label="4H",  step="hour",  stepmode="backward"),
-                    dict(count=1, label="1D",  step="day",   stepmode="backward"),
-                    dict(count=7, label="1W",  step="day",   stepmode="backward"),
-                    dict(count=1, label="1M",  step="month", stepmode="backward"),
-                    dict(count=3, label="3M",  step="month", stepmode="backward"),
+                    dict(count=1,  label="1H",   step="hour",  stepmode="backward"),
+                    dict(count=4,  label="4H",   step="hour",  stepmode="backward"),
+                    dict(count=1,  label="TODAY", step="day",   stepmode="todate"),
+                    dict(count=1,  label="1D",   step="day",   stepmode="backward"),
+                    dict(count=3,  label="3D",   step="day",   stepmode="backward"),
+                    dict(count=7,  label="1W",   step="day",   stepmode="backward"),
+                    dict(count=1,  label="1M",   step="month", stepmode="backward"),
                     dict(step="all", label="ALL"),
                 ],
                 bgcolor=T["bg_panel"],
@@ -726,6 +757,9 @@ def build_chart(
             ),
             showspikes=True, spikemode="across", spikesnap="cursor",
             spikecolor=T["text_dim"], spikethickness=1, spikedash="dot",
+            # For intraday intervals, default to showing the last day of data.
+            # The full dataset is still loaded so the user can pan/drag backwards.
+            **_intraday_xrange(df, interval),
         ),
         # Spike lines
         yaxis=dict(showspikes=True, spikemode="toaxis", spikesnap="cursor",

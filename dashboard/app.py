@@ -954,11 +954,12 @@ except ImportError:
     go = None
 
 # ── Session state ──────────────────────────────────────────────────────────────
-# Load UI defaults from config (set once on first visit, then user-controlled)
-_cfg_sym = CONFIG.data.ui_default_symbol
-_cfg_src = CONFIG.data.ui_default_source
-_cfg_ivl = CONFIG.data.ui_default_interval
-_cfg_per = CONFIG.data.ui_default_period
+# Saved defaults override config defaults so the user's last saved ticker is
+# restored on every page refresh (fix: previously _def_symbol was ignored here).
+_cfg_sym = st.session_state.get("_def_symbol") or CONFIG.data.ui_default_symbol
+_cfg_src = st.session_state.get("_def_source") or CONFIG.data.ui_default_source
+_cfg_ivl = st.session_state.get("_def_interval") or CONFIG.data.ui_default_interval
+_cfg_per = st.session_state.get("_def_period") or CONFIG.data.ui_default_period
 
 _defaults = dict(
     last_refresh=time.time(), prev_signal=None,
@@ -1259,8 +1260,8 @@ with st.container():
     per  = t4.selectbox("", per_opts, index=_per_idx, label_visibility="collapsed")
 
     # ── Strategy mode selector ─────────────────────────────────────────────
-    _mode_opts  = ["Multi-Strategy", "Markov Chains", "Markov + Multi"]
-    _mode_vals  = ["multi", "markov", "markov_multi"]
+    _mode_opts  = ["Multi-Strategy", "Markov Chains", "Markov + Multi", "Markov Plus"]
+    _mode_vals  = ["multi", "markov", "markov_multi", "markov_plus"]
     _cur_mode   = st.session_state.get("strategy_mode", "multi")
     _mode_idx   = _mode_vals.index(_cur_mode) if _cur_mode in _mode_vals else 0
     _mode_label = t5.selectbox("", _mode_opts, index=_mode_idx, label_visibility="collapsed",
@@ -1271,6 +1272,25 @@ with st.container():
     auto      = t7.toggle("AUTO",    value=st.session_state.auto_refresh)
     rsec      = t8.selectbox("", [10,30,60,300], index=1, label_visibility="collapsed", format_func=lambda x:f"{x}s")
     clear_btn = t9.button("✕ CACHE", type="secondary", use_container_width=True)
+
+    # ── Auto-save pinned settings for active ticker when toolbar changes ────
+    # This ensures switching away and back restores the latest settings, not
+    # only the settings that were active at pin time.
+    _active_sym = st.session_state.symbol
+    if _active_sym in st.session_state.pinned_tickers:
+        _pts = st.session_state.get("pinned_ticker_settings", {})
+        _saved_pts = _pts.get(_active_sym, {})
+        _new_pts = {
+            "source":          src,
+            "interval":        ivl,
+            "period":          per,
+            "strategy_mode":   strategy_mode,
+            "tz_offset_hours": float(st.session_state.get("tz_offset_hours", 3.0)),
+        }
+        if _saved_pts != _new_pts:
+            _pts[_active_sym] = _new_pts
+            st.session_state["pinned_ticker_settings"] = _pts
+            save_settings()
 
     # ── PIN button — add current symbol to pinned tabs ─────────────────────
     _already_pinned = sym.strip().upper() in [p.upper() for p in st.session_state.pinned_tickers]
@@ -1440,7 +1460,7 @@ if need_load:
             rec_new = agg.analyse(df, sym)
             st.session_state.rec = rec_new
             # Record Markov signal for chart overlay when in a Markov mode
-            if strategy_mode in ("markov", "markov_multi") and rec_new and rec_new.signal in ("BUY", "SELL"):
+            if strategy_mode in ("markov", "markov_multi", "markov_plus") and rec_new and rec_new.signal in ("BUY", "SELL"):
                 mkv_entry = {
                     "date":   df.index[-1],
                     "signal": rec_new.signal,
@@ -1502,8 +1522,27 @@ if df is None or len(df) < 2:
 # Previously only updated on BUY/SELL, causing missed re-entries.
 engine = st.session_state.alert_engine
 if rec:
-    for a in engine.check_conditions(sym, df, rec, st.session_state.prev_signal):
+    _fired_alerts = engine.check_conditions(sym, df, rec, st.session_state.prev_signal)
+    for a in _fired_alerts:
         st.toast(f"{a.emoji} {a.title} — {a.symbol} @ {a.price:.4f}", icon="⚡")
+    # Log BUY/SELL signal alerts to the persistent alert log
+    if rec.signal in ("BUY", "SELL") and rec.signal != st.session_state.prev_signal:
+        try:
+            from dashboard.alert_log import log_alert
+            log_alert(
+                symbol        = sym,
+                signal        = rec.signal,
+                price         = rec.entry_price,
+                strategy_mode = strategy_mode,
+                score         = rec.composite_score,
+                confidence    = rec.confidence_pct,
+                planned_amount= float(st.session_state.get("planned_trade_amount", 0.0)),
+                entry_price   = rec.entry_price,
+                stop_loss     = rec.stop_loss,
+                take_profit   = rec.take_profit,
+            )
+        except Exception:
+            pass
     # Always update prev_signal so HOLD resets the "already seen BUY" memory
     st.session_state.prev_signal = rec.signal
 
@@ -1643,7 +1682,7 @@ with chart_col:
         else:
             sigs     = st.session_state.historical_signals if show_sig else []
             mkv_sigs = st.session_state.get("markov_signals", [])
-            _is_markov_mode = st.session_state.get("strategy_mode", "multi") in ("markov", "markov_multi")
+            _is_markov_mode = st.session_state.get("strategy_mode", "multi") in ("markov", "markov_multi", "markov_plus")
             fig  = build_chart(
                 df=df, symbol=sym, signals=sigs,
                 entry_price=rec.entry_price  if rec else None,
@@ -1658,6 +1697,7 @@ with chart_col:
                 show_markov    =_is_markov_mode,
                 light_mode     =st.session_state.get("theme", "light") == "light",
                 tz_offset_hours=float(st.session_state.get("tz_offset_hours", 3.0)),
+                interval       =ivl,
             )
             # Patch BB visibility
             if not show_bb:
@@ -1842,6 +1882,12 @@ with chart_col:
 
     with tab_log:
         try:
+            # ── Signal Alert Log (BUY/SELL tracking with planned trade amount)
+            from dashboard.alert_log import render_alert_log
+            render_alert_log()
+
+            st.divider()
+
             # ── Trade Journal (full P&L tracking) ───────────────────────────
             render_trade_journal()
 
@@ -1911,6 +1957,7 @@ with panel_col:
             "multi":        ("MULTI-STRATEGY",   "var(--blue)",   "rgba(75,159,255,0.12)",  "rgba(75,159,255,0.3)"),
             "markov":       ("◈ MARKOV CHAINS",  "var(--purple)", "rgba(155,109,255,0.12)", "rgba(155,109,255,0.3)"),
             "markov_multi": ("◈ MARKOV + MULTI", "var(--purple)", "rgba(155,109,255,0.12)", "rgba(155,109,255,0.3)"),
+            "markov_plus":  ("◈ MARKOV PLUS",    "var(--purple)", "rgba(155,109,255,0.15)", "rgba(155,109,255,0.4)"),
         }
         _badge_text, _badge_col, _badge_bg, _badge_bdr = _mode_badge_map.get(
             _cur_strat, ("MULTI-STRATEGY", "var(--blue)", "rgba(75,159,255,0.12)", "rgba(75,159,255,0.3)"))
@@ -1998,8 +2045,8 @@ with panel_col:
             </div>
             """, unsafe_allow_html=True)
 
-        # ── Markov diagnostics panel (Markov & Markov+Multi modes only) ──────
-        _is_markov_panel = _cur_strat in ("markov", "markov_multi")
+        # ── Markov diagnostics panel (Markov, Markov+Multi, Markov Plus modes) ─
+        _is_markov_panel = _cur_strat in ("markov", "markov_multi", "markov_plus")
         if _is_markov_panel:
             _mkv_data = rec.strategy_breakdown.get("markov_chains", {})
             _mkv_sub  = _mkv_data.get("sub_scores", {})

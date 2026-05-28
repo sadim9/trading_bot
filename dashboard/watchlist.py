@@ -72,8 +72,8 @@ PRESET_LISTS = {
     "Gulf / MENA":      ["AAPL", "MSFT", "ARAMCO.SR", "EMAAR.DU", "FAB.AD"],
 }
 
-_STRATEGY_OPTS  = ["Multi-Strategy", "Markov Chains", "Markov + Multi"]
-_STRATEGY_VALS  = ["multi", "markov", "markov_multi"]
+_STRATEGY_OPTS  = ["Multi-Strategy", "Markov Chains", "Markov + Multi", "Markov Plus"]
+_STRATEGY_VALS  = ["multi", "markov", "markov_multi", "markov_plus"]
 
 _C = {
     "green":    "#00c9a7",
@@ -413,7 +413,7 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
         err      = r.get("error")
         is_active = sym == main_symbol.upper()
         sym_mode  = r.get("strategy_mode", wl_cfg.get(sym, {}).get("strategy", "multi"))
-        mode_short = {"multi": "MULTI", "markov": "MRKV", "markov_multi": "MRK+M"}.get(sym_mode, sym_mode.upper()[:5])
+        mode_short = {"multi": "MULTI", "markov": "MRKV", "markov_multi": "MRK+M", "markov_plus": "MKV+"}.get(sym_mode, sym_mode.upper()[:5])
 
         if err:
             st.markdown(
@@ -544,9 +544,13 @@ def _render_ticker_detail(r: dict, sym: str, sig: str, score: float, conf: float
     k5.metric("Position",    f"{pos_pct:.1f}%")
 
     # Mini candlestick chart
+    wl_interval = st.session_state.get("wl_interval", "1h")
     if df is not None and HAVE_PLOTLY:
         try:
-            df_plot = df.tail(60)
+            _intraday_ivls = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h"}
+            _is_intraday   = wl_interval in _intraday_ivls
+            # For intraday show last day; for daily show last 60 bars
+            df_plot = df.tail(200) if _is_intraday else df.tail(60)
             fig_mini = go.Figure()
             fig_mini.add_trace(go.Candlestick(
                 x=df_plot.index,
@@ -582,6 +586,20 @@ def _render_ticker_detail(r: dict, sym: str, sig: str, score: float, conf: float
                         annotation_text=lbl,
                         annotation_font=dict(color=clr, size=9),
                     )
+            # Day-view range for intraday intervals
+            _xrange_kwargs = {}
+            if _is_intraday and len(df_plot) > 0:
+                try:
+                    import pandas as _pd
+                    _last_ts   = df_plot.index[-1]
+                    _day_start = _pd.Timestamp(_last_ts.date())
+                    _xrange_kwargs = {"range": [
+                        _day_start - _pd.Timedelta(minutes=30),
+                        _last_ts   + _pd.Timedelta(hours=1),
+                    ]}
+                except Exception:
+                    pass
+
             fig_mini.update_layout(
                 paper_bgcolor=THEME["bg"],
                 plot_bgcolor=THEME["bg"],
@@ -589,10 +607,12 @@ def _render_ticker_detail(r: dict, sym: str, sig: str, score: float, conf: float
                 height=220,
                 margin=dict(l=40, r=20, t=10, b=20),
                 xaxis=dict(gridcolor=THEME["grid"], showticklabels=True,
-                           rangeslider_visible=False, tickfont=dict(size=9)),
+                           rangeslider_visible=False, tickfont=dict(size=9),
+                           **_xrange_kwargs),
                 yaxis=dict(gridcolor=THEME["grid"], side="right",
                            tickfont=dict(size=9)),
                 hovermode="x unified",
+                dragmode="pan",
             )
             st.plotly_chart(fig_mini, width="stretch",
                             config=dict(displayModeBar=False))

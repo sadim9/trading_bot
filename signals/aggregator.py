@@ -41,6 +41,12 @@ try:
 except ImportError:
     MARKOV_OK = False
 
+try:
+    from strategies.markov_plus import MarkovPlusStrategy
+    MARKOV_PLUS_OK = True
+except ImportError:
+    MARKOV_PLUS_OK = False
+
 
 @dataclass
 class TradeRecommendation:
@@ -114,10 +120,11 @@ class SignalAggregator:
     strategy_mode: "multi" | "markov" | "markov_multi" | "custom"
     """
 
-    MODE_MULTI        = "multi"
-    MODE_MARKOV       = "markov"
-    MODE_MARKOV_MULTI = "markov_multi"
-    MODE_CUSTOM       = "custom"
+    MODE_MULTI         = "multi"
+    MODE_MARKOV        = "markov"
+    MODE_MARKOV_MULTI  = "markov_multi"
+    MODE_MARKOV_PLUS   = "markov_plus"
+    MODE_CUSTOM        = "custom"
 
     def __init__(
         self,
@@ -132,7 +139,24 @@ class SignalAggregator:
         self._weights:    Dict[str, float]  = {}
 
         # ── Build strategy set based on mode ──────────────────────────────────
-        if strategy_mode == self.MODE_MARKOV:
+        if strategy_mode == self.MODE_MARKOV_PLUS:
+            # Markov Plus strategy (enhanced framework with VWAP + ATR scaling)
+            if MARKOV_PLUS_OK:
+                self._strategies["markov_plus"] = MarkovPlusStrategy(
+                    n_states           = self.cfg.strategy.markov_n_states,
+                    tau                = self.cfg.strategy.markov_tau,
+                    eps                = self.cfg.strategy.markov_eps,
+                    lookback           = self.cfg.strategy.markov_lookback,
+                    n_step             = getattr(self.cfg.strategy, "markov_n_step",        3),
+                    n_step_weight      = getattr(self.cfg.strategy, "markov_n_step_weight", 0.35),
+                    regime_bull_thresh = getattr(self.cfg.strategy, "markov_regime_bull",   0.55),
+                    regime_bear_thresh = getattr(self.cfg.strategy, "markov_regime_bear",   0.55),
+                )
+                self._weights["markov_plus"] = 1.0
+            else:
+                self._add_classic_strategies(w)
+
+        elif strategy_mode == self.MODE_MARKOV:
             # Pure Markov Chains — only this strategy with full weight
             if MARKOV_OK:
                 self._strategies["markov_chains"] = MarkovChainsStrategy(
