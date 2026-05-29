@@ -326,7 +326,8 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
             )
 
             cur_notify = sym_data.get("notify", True)
-            new_notify = col5.toggle("", value=cur_notify, key=f"wl_notify_{sym}")
+            new_notify = col5.toggle("🔔", value=cur_notify, key=f"wl_notify_{sym}",
+                                     label_visibility="collapsed")
 
             # Detect changes
             if (new_strat != cur_strat
