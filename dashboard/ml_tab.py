@@ -268,7 +268,15 @@ def render_ml_tab(
     # ── Row 2: Actual vs Predicted PRICE line chart ──────────────────────────
     st.plotly_chart(
         _chart_price_prediction_line(result, df, t),
-        use_container_width=True, config=dict(displayModeBar=False),
+        use_container_width=True,
+        config=dict(
+            scrollZoom=True,
+            displayModeBar=True,
+            modeBarButtonsToRemove=["lasso2d", "select2d", "autoScale2d",
+                                    "toggleSpikelines", "hoverClosestCartesian"],
+            toImageButtonOptions=dict(format="png", filename=f"{symbol}_predicted_price"),
+            responsive=True,
+        ),
     )
 
     # ── Row 3: Scatter + CV Folds (side by side) ─────────────────────────────
@@ -693,7 +701,14 @@ def _chart_price_prediction_line(result, df: pd.DataFrame, t: dict) -> go.Figure
     ), row=2, col=1)
     fig.add_hline(y=0, line_color=t["border"], line_width=0.8, row=2, col=1)
 
-    lay = _plotly_base(t, f"Actual vs ML-Predicted Price  ·  OOS period  ·  horizon={horizon} bar(s)", height=400)
+    lay = _plotly_base(t, f"Actual vs ML-Predicted Price  ·  OOS period  ·  horizon={horizon} bar(s)", height=460)
+    lay["xaxis"] = {**lay.get("xaxis", {}),
+                    "rangeslider": dict(visible=True, thickness=0.05,
+                                       bgcolor=t["surface"], bordercolor=t["border"]),
+                    "type": "date",
+                    "tickfont": dict(size=9, color=t["text_mute"])}
+    lay["xaxis2"] = dict(gridcolor=t["grid"], zeroline=False,
+                         tickfont=dict(size=9, color=t["text_mute"]))
     lay["yaxis"]  = {**lay.get("yaxis", {}),
                      "title": dict(text="Price ($)", font=dict(size=9)),
                      "side": "right", "gridcolor": t["grid"]}
@@ -702,14 +717,16 @@ def _chart_price_prediction_line(result, df: pd.DataFrame, t: dict) -> go.Figure
                          tickfont=dict(size=9, color=t["text_mute"]),
                          title=dict(text="Error ($)", font=dict(size=9)),
                          side="right")
-    lay["xaxis2"] = dict(gridcolor=t["grid"], zeroline=False,
-                         tickfont=dict(size=9, color=t["text_mute"]))
-    lay["legend"]  = dict(orientation="h", x=0.01, y=1.02,
-                          xanchor="left", yanchor="bottom",
-                          bgcolor="rgba(0,0,0,0)", borderwidth=0,
-                          font=dict(size=9, color=t["text_sec"]))
-    lay["margin"]  = dict(l=10, r=80, t=44, b=30)
-    lay["barmode"] = "overlay"
+    lay["legend"]  = dict(
+        orientation="h", x=0.5, y=-0.08,
+        xanchor="center", yanchor="top",
+        bgcolor="rgba(0,0,0,0)", borderwidth=0,
+        font=dict(size=9, color=t["text_sec"]),
+    )
+    lay["margin"]   = dict(l=10, r=120, t=44, b=60)
+    lay["barmode"]  = "overlay"
+    lay["hovermode"] = "x unified"
+    lay["dragmode"]  = "pan"
     fig.update_layout(**lay)
     return fig
 
