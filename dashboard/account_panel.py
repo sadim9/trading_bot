@@ -414,30 +414,28 @@ def render_account_panel():
     st.markdown('<div class="acct-section">', unsafe_allow_html=True)
     st.markdown('<div class="acct-title">DISCORD — Trade Confirmation + Notifications</div>', unsafe_allow_html=True)
 
-    # ── Auto-reconnect on page refresh ────────────────────────────────────
-    # The DiscordConfirmBot background thread is lost on every Streamlit
-    # rerun (session state only holds picklable objects). Re-instantiate it
-    # silently if saved credentials exist and the bot is not yet running.
-    _saved_dc_token   = st.session_state.get("DISCORD_BOT_TOKEN", "")
-    _saved_dc_channel = st.session_state.get("DISCORD_CHANNEL_ID", "")
-    _bot_alive = st.session_state.get("discord_confirm_bot") is not None
-    _reconnect_attempted = st.session_state.get("_dc_reconnect_attempted", False)
+    # ── Read persisted credentials (separate from widget keys to avoid
+    # Streamlit widget-state vs session-state collision on reruns)
+    _saved_dc_token   = st.session_state.get("_discord_bot_token",   os.getenv("DISCORD_BOT_TOKEN",   ""))
+    _saved_dc_channel = st.session_state.get("_discord_channel_id",  os.getenv("DISCORD_CHANNEL_ID",  ""))
+    _saved_dc_webhook = st.session_state.get("_discord_webhook_url",  "")
 
-    if _saved_dc_token and _saved_dc_channel and not _bot_alive and not _reconnect_attempted:
+    # ── Auto-reconnect on page refresh (once per session) ─────────────────
+    _bot_alive = st.session_state.get("discord_confirm_bot") is not None
+    _reconnect_done = st.session_state.get("_dc_reconnect_attempted", False)
+    if _saved_dc_token and _saved_dc_channel and not _bot_alive and not _reconnect_done:
         st.session_state["_dc_reconnect_attempted"] = True
         try:
             import discord as _dc_chk  # noqa: F401
             from brokers.discord_confirm import DiscordConfirmBot
-            _saved_timeout = int(st.session_state.get("dc_timeout", 120))
             _bot = DiscordConfirmBot(
                 bot_token=_saved_dc_token,
                 channel_id=int(_saved_dc_channel),
-                timeout_seconds=_saved_timeout,
+                timeout_seconds=int(st.session_state.get("dc_timeout", 120)),
             )
             st.session_state["discord_confirm_bot"] = _bot
             st.session_state["discord_connected"]   = True
         except Exception:
-            # Auto-reconnect silently fails — user can manually reconnect
             st.session_state["discord_connected"] = False
 
     st.markdown("""
@@ -456,7 +454,7 @@ def render_account_panel():
       &nbsp;&nbsp;b. Right-click the alert channel → <b>Copy Channel ID</b> (long number)<br><br>
       <b>Step 4 — Webhook URL for signal alerts (separate, no bot needed)</b><br>
       &nbsp;&nbsp;a. Right-click channel → Edit Channel → Integrations → Webhooks → New Webhook<br>
-      &nbsp;&nbsp;b. Copy the Webhook URL and paste in the field below
+      &nbsp;&nbsp;b. Copy the Webhook URL and paste below — then click 💾 Save
     </div>
     """, unsafe_allow_html=True)
 
@@ -465,18 +463,18 @@ def render_account_panel():
     timeout = st.slider("Confirmation timeout (seconds)", 30, 300,
                         int(st.session_state.get("dc_timeout", 120)), 30, key="dc_timeout")
 
-    # ── Bot credentials (trade confirmation) ─────────────────────────────
+    # ── Bot credentials — widget keys are distinct from persist keys ───────
     st.markdown("**Trade Confirmation Bot** (interactive ✅/❌ buttons)")
     c1, c2 = st.columns(2)
     dc_token = c1.text_input(
-        "Bot Token", value=_env("DISCORD_BOT_TOKEN"),
-        type="password", key="DISCORD_BOT_TOKEN",
+        "Bot Token", value=_saved_dc_token,
+        type="password", key="_dc_token_input",
         placeholder="123456789012345678:ABCDefgh...",
         help="From discord.com/developers/applications → Bot → Reset Token",
     )
     dc_channel = c2.text_input(
-        "Channel ID", value=_env("DISCORD_CHANNEL_ID"),
-        key="DISCORD_CHANNEL_ID",
+        "Channel ID", value=_saved_dc_channel,
+        key="_dc_channel_input",
         placeholder="1234567890123456789",
         help="Right-click channel in Discord (Developer Mode on) → Copy Channel ID",
     )
@@ -484,7 +482,7 @@ def render_account_panel():
     # ── Webhook URL (signal alert notifications) ──────────────────────────
     st.markdown("**Signal Alert Webhook** (automatic BUY/SELL/RSI notifications)")
     dc_webhook = st.text_input(
-        "Webhook URL", value=st.session_state.get("_discord_webhook_url", ""),
+        "Webhook URL", value=_saved_dc_webhook,
         key="_dc_webhook_input",
         placeholder="https://discord.com/api/webhooks/...",
         help="Channel → Edit → Integrations → Webhooks → New Webhook → Copy URL",
@@ -496,16 +494,16 @@ def render_account_panel():
 
     if b1.button("💾 Save Discord Settings", type="primary",
                  use_container_width=True, key="dc_save"):
-        # Persist credentials so they survive page refresh / container restart
-        st.session_state["DISCORD_BOT_TOKEN"]   = dc_token
-        st.session_state["DISCORD_CHANNEL_ID"]  = dc_channel
+        # Store under underscore-prefixed keys (not widget keys) so
+        # apply_settings_to_session can restore them reliably on next load.
+        st.session_state["_discord_bot_token"]   = dc_token
+        st.session_state["_discord_channel_id"]  = dc_channel
         st.session_state["_discord_webhook_url"] = dc_webhook
-        st.session_state["dc_require"]          = require
-        st.session_state["dc_timeout"]          = timeout
+        st.session_state["dc_require"]           = require
+        st.session_state["dc_timeout"]           = timeout
         save_settings()
-        # Rebuild alert engine with the new webhook URL
         _rebuild_alerts(dc_url=dc_webhook)
-        st.success("✅ Discord settings saved — credentials will persist after refresh.")
+        st.success("✅ Discord settings saved — credentials will persist after restart.")
 
     if b2.button("▶ Connect Bot", use_container_width=True, key="dc_connect"):
         if not dc_token or not dc_channel:
@@ -513,11 +511,11 @@ def render_account_panel():
         elif not dc_channel.strip().isdigit():
             st.error("Channel ID must be numeric (right-click channel → Copy ID).")
         else:
-            # Save first so credentials are available after reconnect
-            st.session_state["DISCORD_BOT_TOKEN"]  = dc_token
-            st.session_state["DISCORD_CHANNEL_ID"] = dc_channel
-            st.session_state["dc_require"]         = require
-            st.session_state["dc_timeout"]         = timeout
+            # Always save before connecting so credentials survive a restart
+            st.session_state["_discord_bot_token"]  = dc_token
+            st.session_state["_discord_channel_id"] = dc_channel
+            st.session_state["dc_require"]          = require
+            st.session_state["dc_timeout"]          = timeout
             save_settings()
             with st.spinner("Connecting Discord bot (up to 20s) …"):
                 try:
@@ -528,35 +526,32 @@ def render_account_panel():
                 else:
                     try:
                         from brokers.discord_confirm import DiscordConfirmBot
-                        # Close existing bot if running
                         _old = st.session_state.get("discord_confirm_bot")
                         if _old:
-                            try:
-                                _old.close()
-                            except Exception:
-                                pass
+                            try: _old.close()
+                            except Exception: pass
                         bot = DiscordConfirmBot(
                             bot_token=dc_token,
                             channel_id=int(dc_channel),
                             timeout_seconds=timeout,
                         )
-                        st.session_state["discord_confirm_bot"] = bot
-                        st.session_state["discord_connected"]   = True
-                        st.session_state["dc_require_saved"]    = require
+                        st.session_state["discord_confirm_bot"]     = bot
+                        st.session_state["discord_connected"]       = True
+                        st.session_state["dc_require_saved"]        = require
                         st.session_state["_dc_reconnect_attempted"] = True
                         dc_connected = True
-                        st.success("✅ Discord bot connected! Use **Send Test** to verify.")
+                        st.success("✅ Discord bot connected! Use **📨 Send Test** to verify.")
                     except Exception as e:
                         st.session_state["discord_connected"] = False
                         err = str(e)
                         if "401" in err or "Improper token" in err or "token" in err.lower():
                             st.error("❌ Invalid Bot Token — copy it from the Discord Developer Portal → Bot → Reset Token.")
                         elif "403" in err or "Missing Access" in err:
-                            st.error("❌ Bot lacks permissions — re-invite the bot with Send Messages + Embed Links + Read Message History.")
+                            st.error("❌ Bot lacks permissions — re-invite with Send Messages + Embed Links + Read Message History.")
                         elif "channel" in err.lower() or "404" in err:
                             st.error("❌ Channel ID not found — enable Developer Mode in Discord, right-click channel → Copy Channel ID.")
                         elif "timeout" in err.lower() or "20" in err:
-                            st.error("❌ Bot timed out — check the token is correct and the bot was properly invited to your server.")
+                            st.error("❌ Bot timed out — verify the token is correct and the bot is in your server.")
                         else:
                             st.error(f"❌ Connection failed: {e}")
 
@@ -564,33 +559,33 @@ def render_account_panel():
         bot = st.session_state.get("discord_confirm_bot")
         if bot:
             ok = bot.test()
-            st.success("✅ Test message delivered! Check your Discord channel.") if ok else st.error("❌ Delivery failed — check bot permissions.")
+            (st.success("✅ Test message delivered! Check your Discord channel.")
+             if ok else st.error("❌ Delivery failed — check bot permissions."))
         else:
-            # Also test webhook if no bot
             _wh = st.session_state.get("_discord_webhook_url", "")
             if _wh and _wh.startswith("https://discord.com/api/webhooks/"):
                 try:
                     import requests as _req
-                    r = _req.post(_wh, json={"content": "🤖 **APEX Terminal** — webhook test message"}, timeout=10)
+                    r = _req.post(_wh, json={"content": "🤖 **APEX Terminal** — webhook test"}, timeout=10)
                     if r.status_code in (200, 204):
                         st.success("✅ Webhook test delivered!")
                     else:
-                        st.error(f"❌ Webhook returned {r.status_code}")
+                        st.error(f"❌ Webhook returned HTTP {r.status_code}")
                 except Exception as _we:
                     st.error(f"❌ Webhook test failed: {_we}")
             else:
-                st.warning("Connect the Discord bot first, or enter a valid Webhook URL.")
+                st.warning("Connect the bot first, or enter a valid Webhook URL and click 💾 Save.")
 
-    # Status badges
+    # ── Status badges ─────────────────────────────────────────────────────
     _bot_now = st.session_state.get("discord_connected", False)
     _wh_now  = bool(st.session_state.get("_discord_webhook_url", ""))
     st.markdown(_status_badge(_bot_now,
         f"Bot connected · Confirmation required: {require} · Timeout: {timeout}s",
-        "Bot not connected — click ▶ Connect Bot"
+        "Bot not connected — enter credentials and click ▶ Connect Bot"
     ), unsafe_allow_html=True)
     st.markdown(_status_badge(_wh_now,
         "Webhook URL saved — signal alerts active",
-        "No webhook URL — signal alerts via Discord disabled"
+        "No webhook URL — Discord signal alerts disabled"
     ), unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
