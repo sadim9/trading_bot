@@ -502,8 +502,8 @@ def render_account_panel():
         st.session_state["_discord_bot_token"]   = dc_token
         st.session_state["_discord_channel_id"]  = dc_channel
         st.session_state["_discord_webhook_url"] = dc_webhook
-        st.session_state["dc_require"]           = require
-        st.session_state["dc_timeout"]           = timeout
+        # dc_require / dc_timeout are widget-bound keys — Streamlit updates them
+        # automatically; writing to them after render raises an error.
         save_settings()
         _rebuild_alerts(dc_url=dc_webhook)
         st.success("✅ Discord settings saved — credentials will persist after restart.")
@@ -517,8 +517,7 @@ def render_account_panel():
             # Always save before connecting so credentials survive a restart
             st.session_state["_discord_bot_token"]  = dc_token
             st.session_state["_discord_channel_id"] = dc_channel
-            st.session_state["dc_require"]          = require
-            st.session_state["dc_timeout"]          = timeout
+            # dc_require / dc_timeout managed by widgets — don't set after render
             save_settings()
             with st.spinner("Connecting Discord bot (up to 20s) …"):
                 try:
