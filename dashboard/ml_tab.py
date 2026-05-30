@@ -170,27 +170,44 @@ def render_ml_tab(
     result = sess.get(_cache_key)
 
     if train_btn:
+        _MH_HORIZONS = [1, 5, 20]   # always train all three for multi-horizon display
+        _total_steps  = len(_MH_HORIZONS)
         _prog = st.progress(0, text="Initialising …")
         _stat = st.empty()
 
-        def _cb(pct: int, msg: str):
-            _prog.progress(pct / 100, text=msg)
-            _stat.caption(msg)
-
         try:
             from ml.trainer import train as ml_train
-            result = ml_train(
-                df=df, symbol=symbol, model_type=model_type,
-                horizon=horizon, n_cv_folds=n_cv,
-                progress_callback=_cb,
-            )
-            sess[_cache_key] = result
-            _prog.progress(1.0, text="Training complete ✓")
+
+            for _hi, _h in enumerate(_MH_HORIZONS):
+                _is_primary = (_h == horizon)
+                _h_key      = f"ml_result_{symbol}_{model_type}_{_h}" if _is_primary \
+                              else f"ml_mh_{symbol}_{model_type}_{_h}"
+                _h_cv       = n_cv if _is_primary else 2   # fewer folds for secondary horizons
+
+                _base_pct = int(_hi / _total_steps * 100)
+
+                def _cb(pct: int, msg: str, base=_base_pct, span=int(100/_total_steps)):
+                    total = min(base + int(pct * span / 100), 99)
+                    _prog.progress(total / 100, text=f"H={_h}: {msg}")
+                    _stat.caption(f"Horizon {_h} bars — {msg}")
+
+                _h_result = ml_train(
+                    df=df, symbol=symbol, model_type=model_type,
+                    horizon=_h, n_cv_folds=_h_cv,
+                    progress_callback=_cb,
+                )
+                sess[_h_key] = _h_result
+
+                # Also store primary result under the selected horizon cache key
+                if _is_primary:
+                    result = _h_result
+
+            _prog.progress(1.0, text="All horizons trained ✓")
             _prog.empty()
             _stat.empty()
             st.toast(
-                f"✅ {model_type.replace('_',' ').title()} trained on {symbol} "
-                f"— Dir. Acc: {result.directional_acc*100:.1f}%",
+                f"✅ {model_type.replace('_',' ').title()} trained — "
+                f"H1/H5/H20 ready · Dir. Acc: {result.directional_acc*100:.1f}%",
                 icon="🤖",
             )
         except Exception as e:
@@ -228,27 +245,39 @@ def render_ml_tab(
     st.markdown("<hr style='margin:10px 0 14px'>", unsafe_allow_html=True)
 
     # ═══════════════════════════════════════════════════════════════════════════
-    #  CHARTS — price prediction overlay (top row) + diagnostics (bottom row)
+    #  CHARTS
+    #  Row 1 (full-width): Price chart with ML signals — scrollable / zoomable
+    #  Row 2 (3-col):      Actual vs Predicted | Feature Importance | CV Folds
     # ═══════════════════════════════════════════════════════════════════════════
-    left, right = st.columns([1.1, 0.9], gap="small")
-    with left:
-        st.plotly_chart(
-            _chart_price_with_signals(result, df, t, symbol, pred, light_mode=light_mode),
-            use_container_width=True, config=dict(displayModeBar=False),
-        )
-    with right:
-        st.plotly_chart(
-            _chart_feature_importance(result, t),
-            use_container_width=True, config=dict(displayModeBar=False),
-        )
 
-    left2, right2 = st.columns([1, 1], gap="small")
-    with left2:
+    # ── Row 1: Price chart — full width, tall, interactive ───────────────────
+    st.plotly_chart(
+        _chart_price_with_signals(result, df, t, symbol, pred, light_mode=light_mode),
+        use_container_width=True,
+        config=dict(
+            scrollZoom=True,
+            displayModeBar=True,
+            modeBarButtonsToRemove=["lasso2d", "select2d", "autoScale2d",
+                                    "toggleSpikelines", "hoverClosestCartesian"],
+            modeBarButtonsToAdd=["drawline"],
+            toImageButtonOptions=dict(format="png", filename=f"{symbol}_ml_chart"),
+            responsive=True,
+        ),
+    )
+
+    # ── Row 2: Diagnostic charts — always all three visible ───────────────────
+    diag1, diag2, diag3 = st.columns([1, 1, 1], gap="small")
+    with diag1:
         st.plotly_chart(
             _chart_actual_vs_predicted(result, t),
             use_container_width=True, config=dict(displayModeBar=False),
         )
-    with right2:
+    with diag2:
+        st.plotly_chart(
+            _chart_feature_importance(result, t),
+            use_container_width=True, config=dict(displayModeBar=False),
+        )
+    with diag3:
         st.plotly_chart(
             _chart_cv_folds(result, t),
             use_container_width=True, config=dict(displayModeBar=False),
@@ -419,25 +448,36 @@ def _chart_price_with_signals(result, df: pd.DataFrame, t: dict, symbol: str, pr
         ), row=1, col=1)
 
     # ── BUY / SELL signals from OOS predictions ───────────────────────────────
-    buy_idx  = np.where(oos_pred > 0.003)[0]   # > +0.3% → BUY signal
-    sell_idx = np.where(oos_pred < -0.003)[0]  # < -0.3% → SELL signal
+    # Threshold: top/bottom 30% of predictions → strong signals only
+    pred_std = float(np.std(oos_pred)) if len(oos_pred) > 5 else 0.003
+    buy_thr  = max(0.002, pred_std * 0.5)
+    sell_thr = -buy_thr
+    buy_idx  = np.where(oos_pred > buy_thr)[0]
+    sell_idx = np.where(oos_pred < sell_thr)[0]
 
-    if len(buy_idx) and len(df_oos):
-        buy_dates  = [oos_dates[i] for i in buy_idx if i < len(df_oos)]
-        buy_prices = [df_oos["Low"].iloc[min(i, len(df_oos)-1)] * 0.998 for i in buy_idx if i < len(df_oos)]
+    n_oos = len(df_oos)
+    if len(buy_idx) and n_oos:
+        buy_valid  = [i for i in buy_idx if i < n_oos]
+        buy_dates  = [oos_dates[i] for i in buy_valid]
+        buy_prices = [float(df_oos["Low"].iloc[i]) * 0.997 for i in buy_valid]
         if buy_dates:
             fig.add_trace(go.Scatter(
-                x=buy_dates, y=buy_prices, mode="markers", name="ML BUY",
-                marker=dict(symbol="triangle-up", size=10, color=t["green"], opacity=0.9),
+                x=buy_dates, y=buy_prices, mode="markers", name="ML BUY ▲",
+                marker=dict(symbol="triangle-up", size=14, color=t["green"],
+                            opacity=0.95, line=dict(color=t["bg"], width=1)),
+                hovertemplate="<b>ML BUY</b><br>Date: %{x}<br>Price: %{y:,.2f}<extra></extra>",
             ), row=1, col=1)
 
-    if len(sell_idx) and len(df_oos):
-        sell_dates  = [oos_dates[i] for i in sell_idx if i < len(df_oos)]
-        sell_prices = [df_oos["High"].iloc[min(i, len(df_oos)-1)] * 1.002 for i in sell_idx if i < len(df_oos)]
+    if len(sell_idx) and n_oos:
+        sell_valid  = [i for i in sell_idx if i < n_oos]
+        sell_dates  = [oos_dates[i] for i in sell_valid]
+        sell_prices = [float(df_oos["High"].iloc[i]) * 1.003 for i in sell_valid]
         if sell_dates:
             fig.add_trace(go.Scatter(
-                x=sell_dates, y=sell_prices, mode="markers", name="ML SELL",
-                marker=dict(symbol="triangle-down", size=10, color=t["red"], opacity=0.9),
+                x=sell_dates, y=sell_prices, mode="markers", name="ML SELL ▼",
+                marker=dict(symbol="triangle-down", size=14, color=t["red"],
+                            opacity=0.95, line=dict(color=t["bg"], width=1)),
+                hovertemplate="<b>ML SELL</b><br>Date: %{x}<br>Price: %{y:,.2f}<extra></extra>",
             ), row=1, col=1)
 
     # ── Current price + ML target ─────────────────────────────────────────────
@@ -470,15 +510,24 @@ def _chart_price_with_signals(result, df: pd.DataFrame, t: dict, symbol: str, pr
     fig.add_hline(y=50, line_color=t["border"], line_width=1,
                   line_dash="dot", row=2, col=1)
 
-    lay = _plotly_base(t, f"ML Signals on Price · {symbol}", height=420)
+    lay = _plotly_base(t, f"ML Signals on Price · {symbol} — Drag to zoom · Scroll to pan", height=600)
+    lay["xaxis"]  = {**lay.get("xaxis", {}),
+                     "rangeslider": dict(visible=True, thickness=0.06,
+                                        bgcolor=t["surface"], bordercolor=t["border"]),
+                     "type": "date"}
     lay["xaxis2"] = dict(gridcolor=t["grid"], showgrid=True, zeroline=False,
                          tickfont=dict(size=9, color=t["text_mute"]))
-    lay["yaxis"]  = {**lay.get("yaxis", {}), "title": dict(text="Price", font=dict(size=9))}
+    lay["yaxis"]  = {**lay.get("yaxis", {}),
+                     "title": dict(text="Price", font=dict(size=9)), "side": "right",
+                     "showgrid": True, "gridcolor": t["grid"]}
     lay["yaxis2"] = dict(gridcolor=t["grid"], showgrid=True, zeroline=False,
                          tickfont=dict(size=9, color=t["text_mute"]),
                          title=dict(text="Dir. Acc %", font=dict(size=9)),
-                         range=[0, 100])
-    lay["xaxis_rangeslider_visible"] = False
+                         range=[0, 100], side="right")
+    lay["hovermode"]   = "x unified"
+    lay["dragmode"]    = "pan"      # default to pan so user can scroll immediately
+    lay["legend"]      = dict(orientation="h", yanchor="top", y=1.12, x=0,
+                               bgcolor="rgba(0,0,0,0)", font=dict(size=10))
     fig.update_layout(**lay)
     return fig
 
@@ -524,7 +573,7 @@ def _chart_feature_importance(result, t: dict) -> go.Figure:
         marker=dict(color=colors, opacity=0.85),
         hovertemplate="%{y}: %{x:.4f}<extra></extra>",
     ))
-    lay = _plotly_base(t, "Feature Importance (Top 15)", height=380)
+    lay = _plotly_base(t, "Feature Importance (Top 15)", height=400)
     lay["yaxis"] = {**lay.get("yaxis", {}), "autorange": "reversed"}
     lay["xaxis"] = {**lay.get("xaxis", {}), "title": dict(text="Importance", font=dict(size=9))}
     fig.update_layout(**lay)
@@ -563,7 +612,7 @@ def _chart_actual_vs_predicted(result, t: dict) -> go.Figure:
         hovertemplate="Pred: %{x:.3f}%<br>Act: %{y:.3f}%<extra></extra>",
     ))
 
-    lay = _plotly_base(t, "Actual vs Predicted Return (%)", height=320)
+    lay = _plotly_base(t, "Actual vs Predicted Return (%)", height=400)
     lay["xaxis"] = {**lay.get("xaxis", {}), "title": dict(text="Predicted %", font=dict(size=9))}
     lay["yaxis"] = {**lay.get("yaxis", {}), "title": dict(text="Actual %",    font=dict(size=9))}
     fig.update_layout(**lay)
@@ -608,7 +657,7 @@ def _chart_cv_folds(result, t: dict) -> go.Figure:
         hovertemplate="%{x}: %{y} bars<extra></extra>",
     ), row=1, col=2)
 
-    lay = _plotly_base(t, "Expanding-Window CV Results", height=290)
+    lay = _plotly_base(t, "Expanding-Window CV Results", height=400)
     lay["yaxis"]  = {**lay.get("yaxis", {}),
                      "title": dict(text="R² %", font=dict(size=9)),
                      "zeroline": True, "zerolinecolor": t["border"]}
@@ -631,11 +680,16 @@ def _render_multi_horizon(result, df: pd.DataFrame, interval: str, t: dict):
 
     for ci, h in enumerate(horizons):
         try:
-            cache_key = f"ml_mh_{result.symbol}_{result.model_type}_{h}"
-            r_h = st.session_state.get(cache_key)
-            if r_h is None:
-                # Reuse the primary result when horizons match
-                r_h = result if h == result.horizon else None
+            # Primary cache key (used when this horizon was the selected one)
+            primary_key = f"ml_result_{result.symbol}_{result.model_type}_{h}"
+            # Secondary key (used when trained alongside another primary horizon)
+            secondary_key = f"ml_mh_{result.symbol}_{result.model_type}_{h}"
+
+            r_h = (
+                st.session_state.get(primary_key)
+                or st.session_state.get(secondary_key)
+                or (result if h == result.horizon else None)
+            )
 
             if r_h is None:
                 cols[ci].markdown(
@@ -643,7 +697,8 @@ def _render_multi_horizon(result, df: pd.DataFrame, interval: str, t: dict):
                     f'border-radius:6px;padding:12px;text-align:center">'
                     f'<div style="font-size:9px;color:{t["text_mute"]};letter-spacing:.15em">'
                     f'{h} BAR{"S" if h>1 else ""}</div>'
-                    f'<div style="font-size:12px;color:{t["text_mute"]};margin-top:6px">Train to unlock</div>'
+                    f'<div style="font-size:12px;color:{t["text_mute"]};margin-top:8px">'
+                    f'Click ▶ TRAIN to unlock</div>'
                     f'</div>',
                     unsafe_allow_html=True,
                 )
