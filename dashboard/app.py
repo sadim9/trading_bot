@@ -1694,7 +1694,7 @@ with chart_col:
     with tab_chart:
         # Chart controls — 2-row layout to prevent label overlap
         _ms = int(st.session_state.get("ma_short", 9))
-        _ml_period = int(st.session_state.get("ma_long", 21))
+        _ml = int(st.session_state.get("ma_long", 21))
         try:
             _tz_disp = f"UTC{int(datetime.now().astimezone().utcoffset().total_seconds()/3600):+d}"
         except Exception:
@@ -1717,7 +1717,7 @@ with chart_col:
             st.markdown(
                 f'<div style="font-size:9px;color:var(--text-mute);padding-top:6px;'
                 f'font-family:var(--mono);line-height:1.6">'
-                f'SMA {_ms}/{_ml_period}<br>{_tz_disp}</div>',
+                f'SMA {_ms}/{_ml}<br>{_tz_disp}</div>',
                 unsafe_allow_html=True,
             )
 
