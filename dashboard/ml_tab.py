@@ -265,24 +265,31 @@ def render_ml_tab(
         ),
     )
 
-    # ── Row 2: Actual vs Predicted (dedicated full-row for visibility) ───────
+    # ── Row 2: Actual vs Predicted PRICE line chart ──────────────────────────
     st.plotly_chart(
-        _chart_actual_vs_predicted(result, t),
+        _chart_price_prediction_line(result, df, t),
         use_container_width=True, config=dict(displayModeBar=False),
     )
 
-    # ── Row 3: Feature Importance + CV Folds (side by side) ──────────────────
-    diag2, diag3 = st.columns([1.2, 0.8], gap="small")
-    with diag2:
+    # ── Row 3: Scatter + CV Folds (side by side) ─────────────────────────────
+    sc_col, cv_col = st.columns([1, 1], gap="small")
+    with sc_col:
         st.plotly_chart(
-            _chart_feature_importance(result, t),
+            _chart_actual_vs_predicted(result, t),
             use_container_width=True, config=dict(displayModeBar=False),
         )
-    with diag3:
+
+    with cv_col:
         st.plotly_chart(
             _chart_cv_folds(result, t),
             use_container_width=True, config=dict(displayModeBar=False),
         )
+
+    # ── Row 5: Feature Importance (full width) ────────────────────────────────
+    st.plotly_chart(
+        _chart_feature_importance(result, t),
+        use_container_width=True, config=dict(displayModeBar=False),
+    )
 
     # ═══════════════════════════════════════════════════════════════════════════
     #  MULTI-HORIZON TARGETS (cached only — no extra training)
@@ -532,7 +539,7 @@ def _chart_price_with_signals(result, df: pd.DataFrame, t: dict, symbol: str, pr
                   annotation_font=dict(size=8, color=t["red"]),
                   annotation_position="right", row=2, col=1)
 
-    lay = _plotly_base(t, f"{symbol} · ML Price Signals  (OOS test period shaded)", height=600)
+    lay = _plotly_base(t, f"{symbol} · ML Price Signals  ·  OOS test period shaded in blue", height=600)
     lay["xaxis"] = {**lay.get("xaxis", {}),
                     "rangeslider": dict(visible=True, thickness=0.05,
                                        bgcolor=t["surface"], bordercolor=t["border"]),
@@ -547,11 +554,15 @@ def _chart_price_with_signals(result, df: pd.DataFrame, t: dict, symbol: str, pr
                          tickfont=dict(size=9, color=t["text_mute"]),
                          title=dict(text="Dir. Acc %", font=dict(size=9)),
                          range=[0, 100], side="right")
-    lay["margin"]      = dict(l=10, r=110, t=50, b=40)   # extra right margin for annotations
-    lay["hovermode"]   = "x unified"
-    lay["dragmode"]    = "pan"      # default to pan so user can scroll immediately
-    lay["legend"]      = dict(orientation="h", yanchor="top", y=1.12, x=0,
-                               bgcolor="rgba(0,0,0,0)", font=dict(size=10))
+    lay["margin"]    = dict(l=10, r=120, t=44, b=60)
+    lay["hovermode"] = "x unified"
+    lay["dragmode"]  = "pan"
+    lay["legend"] = dict(
+        orientation="h", x=0.5, y=-0.08,
+        xanchor="center", yanchor="top",
+        bgcolor="rgba(0,0,0,0)", borderwidth=0,
+        font=dict(size=9, color=t["text_sec"]),
+    )
     fig.update_layout(**lay)
     return fig
 
@@ -600,6 +611,105 @@ def _chart_feature_importance(result, t: dict) -> go.Figure:
     lay = _plotly_base(t, "Feature Importance (Top 15)", height=400)
     lay["yaxis"] = {**lay.get("yaxis", {}), "autorange": "reversed"}
     lay["xaxis"] = {**lay.get("xaxis", {}), "title": dict(text="Importance", font=dict(size=9))}
+    fig.update_layout(**lay)
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  CHART 2b: Actual vs ML-Predicted PRICE (line chart)
+# ─────────────────────────────────────────────────────────────────────────────
+def _chart_price_prediction_line(result, df: pd.DataFrame, t: dict) -> go.Figure:
+    """
+    Line chart comparing actual closing prices vs ML-predicted prices over the
+    OOS period. For each bar, the predicted price = close[i-h] * (1 + pred[i-h]),
+    i.e. what the model forecast the price would be h bars later.
+    """
+    if not result.oos_dates or len(result.oos_dates) < 5:
+        fig = go.Figure()
+        fig.update_layout(**_plotly_base(t, "Actual vs ML-Predicted Price"))
+        return fig
+
+    oos_dates = pd.to_datetime(result.oos_dates)
+    oos_pred  = np.array(result.oos_predicted)
+    horizon   = result.horizon
+
+    df_full = df.dropna(subset=["Close"])
+    df_oos  = df_full.reindex(oos_dates, method="nearest", tolerance="1D").dropna(subset=["Close"])
+
+    if len(df_oos) < 5:
+        fig = go.Figure()
+        fig.update_layout(**_plotly_base(t, "Actual vs ML-Predicted Price"))
+        return fig
+
+    closes    = df_oos["Close"].values
+    dates_use = df_oos.index
+
+    # Reconstruct predicted price: at each bar i the prediction was made at
+    # bar (i - horizon), so predicted_price[i] = close[i-h] * (1 + pred[i-h])
+    predicted_prices = np.full(len(closes), np.nan)
+    n_pred = len(oos_pred)
+    for i in range(horizon, len(closes)):
+        ref = i - horizon
+        if ref < n_pred:
+            predicted_prices[i] = closes[ref] * (1 + oos_pred[ref])
+
+    # Error band (predicted - actual)
+    error = predicted_prices - closes
+
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True,
+        row_heights=[0.70, 0.30], vertical_spacing=0.04,
+    )
+
+    # Actual price
+    fig.add_trace(go.Scatter(
+        x=dates_use, y=closes,
+        name="Actual Price", mode="lines",
+        line=dict(color=t["blue"], width=2),
+        hovertemplate="Actual: $%{y:,.4f}<extra></extra>",
+    ), row=1, col=1)
+
+    # ML predicted price
+    fig.add_trace(go.Scatter(
+        x=dates_use, y=predicted_prices,
+        name=f"ML Predicted (H={horizon})", mode="lines",
+        line=dict(color=t["amber"], width=1.5, dash="dot"),
+        hovertemplate="ML Pred: $%{y:,.4f}<extra></extra>",
+    ), row=1, col=1)
+
+    # Prediction error bar chart (bottom panel)
+    pos_err = np.where(error >= 0, error, 0)
+    neg_err = np.where(error <  0, error, 0)
+    fig.add_trace(go.Bar(
+        x=dates_use, y=pos_err,
+        name="Pred > Actual", marker_color=t["green"], opacity=0.7, showlegend=False,
+        hovertemplate="Error: +$%{y:,.4f}<extra></extra>",
+    ), row=2, col=1)
+    fig.add_trace(go.Bar(
+        x=dates_use, y=neg_err,
+        name="Pred < Actual", marker_color=t["red"], opacity=0.7, showlegend=False,
+        hovertemplate="Error: -$%{customdata:,.4f}<extra></extra>",
+        customdata=np.abs(neg_err),
+    ), row=2, col=1)
+    fig.add_hline(y=0, line_color=t["border"], line_width=0.8, row=2, col=1)
+
+    lay = _plotly_base(t, f"Actual vs ML-Predicted Price  ·  OOS period  ·  horizon={horizon} bar(s)", height=400)
+    lay["yaxis"]  = {**lay.get("yaxis", {}),
+                     "title": dict(text="Price ($)", font=dict(size=9)),
+                     "side": "right", "gridcolor": t["grid"]}
+    lay["yaxis2"] = dict(gridcolor=t["grid"], showgrid=True, zeroline=True,
+                         zerolinecolor=t["border"],
+                         tickfont=dict(size=9, color=t["text_mute"]),
+                         title=dict(text="Error ($)", font=dict(size=9)),
+                         side="right")
+    lay["xaxis2"] = dict(gridcolor=t["grid"], zeroline=False,
+                         tickfont=dict(size=9, color=t["text_mute"]))
+    lay["legend"]  = dict(orientation="h", x=0.01, y=1.02,
+                          xanchor="left", yanchor="bottom",
+                          bgcolor="rgba(0,0,0,0)", borderwidth=0,
+                          font=dict(size=9, color=t["text_sec"]))
+    lay["margin"]  = dict(l=10, r=80, t=44, b=30)
+    lay["barmode"] = "overlay"
     fig.update_layout(**lay)
     return fig
 
