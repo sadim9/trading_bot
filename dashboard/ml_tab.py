@@ -383,7 +383,7 @@ def _chart_oos_overlay(result, df: pd.DataFrame, t: dict, symbol: str) -> go.Fig
     ), row=2, col=1)
 
     lay = _plotly_layout(t, f"OOS: Predicted vs Actual · {symbol}", height=380)
-    lay["yaxis"]  = dict(**lay.get("yaxis", {}), title=dict(text="Return %", font=dict(size=9)))
+    lay["yaxis"]  = {**lay.get("yaxis", {}), "title": dict(text="Return %", font=dict(size=9))}
     lay["yaxis2"] = dict(gridcolor=t["grid"], showgrid=True, zeroline=True,
                          zerolinecolor=t["border"], tickfont=dict(size=9, color=t["text_mute"]),
                          title=dict(text="L/S Cumulative %", font=dict(size=9)))
@@ -423,9 +423,8 @@ def _chart_feature_importance(result, t: dict) -> go.Figure:
         hovertemplate="%{y}: %{x:.4f}<extra></extra>",
     ))
     lay = _plotly_layout(t, "Feature Importance (Top 15)", height=380)
-    lay["yaxis"] = dict(**lay.get("yaxis", {}), autorange="reversed",
-                        tickfont=dict(size=9, color=t["text_mute"]))
-    lay["xaxis"] = dict(**lay.get("xaxis", {}), title=dict(text="Importance", font=dict(size=9)))
+    lay["yaxis"] = {**lay.get("yaxis", {}), "autorange": "reversed"}
+    lay["xaxis"] = {**lay.get("xaxis", {}), "title": dict(text="Importance", font=dict(size=9))}
     fig.update_layout(**lay)
     return fig
 
@@ -463,8 +462,8 @@ def _chart_actual_vs_predicted(result, t: dict) -> go.Figure:
     ))
 
     lay = _plotly_layout(t, "Actual vs Predicted Return (%)", height=350)
-    lay["xaxis"] = dict(**lay.get("xaxis", {}), title=dict(text="Predicted %", font=dict(size=9)))
-    lay["yaxis"] = dict(**lay.get("yaxis", {}), title=dict(text="Actual %", font=dict(size=9)))
+    lay["xaxis"] = {**lay.get("xaxis", {}), "title": dict(text="Predicted %", font=dict(size=9))}
+    lay["yaxis"] = {**lay.get("yaxis", {}), "title": dict(text="Actual %", font=dict(size=9))}
     fig.update_layout(**lay)
 
     # Annotation: directional accuracy
@@ -506,9 +505,9 @@ def _chart_cv_folds(result, t: dict) -> go.Figure:
     ), row=1, col=2)
 
     lay = _plotly_layout(t, "Expanding-Window CV Results", height=310)
-    lay["yaxis"]  = dict(**lay.get("yaxis", {}),
-                         title=dict(text="R² %", font=dict(size=9)),
-                         zeroline=True, zerolinecolor=t["border"])
+    lay["yaxis"]  = {**lay.get("yaxis", {}),
+                     "title": dict(text="R² %", font=dict(size=9)),
+                     "zeroline": True, "zerolinecolor": t["border"]}
     lay["yaxis2"] = dict(gridcolor=t["grid"], showgrid=True, zeroline=False,
                          tickfont=dict(size=9, color=t["text_mute"]),
                          title=dict(text="# bars", font=dict(size=9)))
