@@ -1208,6 +1208,11 @@ if _n_pinned > 0:
                 _pin_settings = st.session_state.get("pinned_ticker_settings", {})
                 _saved        = _pin_settings.get(_t, {})
                 st.session_state.symbol = _t
+                # ── CRITICAL: sync the toolbar text-input widget key so the
+                # next rerun reads the correct symbol, not the previous ticker.
+                # Without this, sym_toolbar still holds the old symbol, which
+                # causes need_load to revert st.session_state.symbol back.
+                st.session_state["sym_toolbar"] = _t
                 # Restore saved toolbar settings for this pin
                 if _saved.get("source"):
                     st.session_state.source        = _saved["source"]
@@ -1519,15 +1524,19 @@ if df is None or len(df) < 2:
     st.stop()
 
 # ── Alert firing ───────────────────────────────────────────────────────────────
-# FIX: track ALL signal states (including HOLD) so BUY→HOLD→BUY re-fires.
-# Previously only updated on BUY/SELL, causing missed re-entries.
+# prev_signals is per-symbol so switching tickers never spuriously re-fires
+# an alert that was already seen on the target ticker.
 engine = st.session_state.alert_engine
 if rec:
-    _fired_alerts = engine.check_conditions(sym, df, rec, st.session_state.prev_signal)
+    # Per-symbol previous-signal tracking (keyed by symbol string)
+    _prev_signals = st.session_state.setdefault("prev_signals", {})
+    _prev_sig_for_sym = _prev_signals.get(sym)
+
+    _fired_alerts = engine.check_conditions(sym, df, rec, _prev_sig_for_sym)
     for a in _fired_alerts:
         st.toast(f"{a.emoji} {a.title} — {a.symbol} @ {a.price:.4f}", icon="⚡")
     # Log BUY/SELL signal alerts to the persistent alert log
-    if rec.signal in ("BUY", "SELL") and rec.signal != st.session_state.prev_signal:
+    if rec.signal in ("BUY", "SELL") and rec.signal != _prev_sig_for_sym:
         try:
             from dashboard.alert_log import log_alert
             log_alert(
@@ -1544,7 +1553,10 @@ if rec:
             )
         except Exception:
             pass
-    # Always update prev_signal so HOLD resets the "already seen BUY" memory
+    # Always update prev_signal for THIS symbol (HOLD resets BUY memory per ticker)
+    _prev_signals[sym] = rec.signal
+    st.session_state.prev_signals = _prev_signals
+    # Keep legacy key in sync so any other code referencing it sees current symbol's state
     st.session_state.prev_signal = rec.signal
 
 # ═══════════════════════════════════════════════════════════════════════════════

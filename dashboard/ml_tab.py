@@ -110,8 +110,9 @@ def render_ml_tab(
         )
         return
 
-    # ── Sidebar controls ───────────────────────────────────────────────────────
-    with st.expander("⚙ MODEL CONFIGURATION", expanded=False):
+    # ── Sidebar controls — stay expanded until a result exists ────────────────
+    _config_open = result is None or train_btn
+    with st.expander("⚙ MODEL CONFIGURATION", expanded=_config_open):
         c1, c2, c3, c4 = st.columns([2, 1.5, 1.5, 1])
 
         model_labels = ["Ensemble (Best)", "Neural Net NN3", "Random Forest", "Elastic Net"]
@@ -133,6 +134,16 @@ def render_ml_tab(
         n_cv = c3.selectbox("CV Folds", [3, 5, 7], index=0)
 
         train_btn = c4.button("▶ TRAIN", type="primary", use_container_width=True)
+
+    # ── Guard: clear stale results if symbol changed since last train ──────────
+    # This prevents the ML tab showing a TSLA model when the user is on BTCUSD.
+    _last_ml_sym = sess.get("_ml_active_symbol")
+    if _last_ml_sym and _last_ml_sym != symbol:
+        # Purge all cached ML results from the previous symbol
+        for _k in [k for k in sess.keys()
+                   if k.startswith("ml_result_") or k.startswith("ml_mh_")]:
+            del sess[_k]
+    sess["_ml_active_symbol"] = symbol
 
     # ── Training ───────────────────────────────────────────────────────────────
     _cache_key = f"ml_result_{symbol}_{model_type}_{horizon}"
