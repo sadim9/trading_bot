@@ -458,13 +458,10 @@ def render_account_panel():
     </div>
     """, unsafe_allow_html=True)
 
-    # Initialise defaults before widget renders so apply_settings_to_session
-    # values don't conflict with the value= parameter (Streamlit ≥1.35 raises
-    # StreamlitAPIException when both key and value= are supplied simultaneously).
-    st.session_state.setdefault("dc_require", True)
-    st.session_state.setdefault("dc_timeout", 120)
-    require = st.toggle("Require Discord confirmation before placing orders", key="dc_require")
-    timeout = st.slider("Confirmation timeout (seconds)", 30, 300, step=30, key="dc_timeout")
+    require = st.toggle("Require Discord confirmation before placing orders",
+                        value=st.session_state.get("dc_require", True), key="dc_require")
+    timeout = st.slider("Confirmation timeout (seconds)", 30, 300,
+                        value=int(st.session_state.get("dc_timeout", 120)), step=30, key="dc_timeout")
 
     # ── Bot credentials — widget keys are distinct from persist keys ───────
     st.markdown("**Trade Confirmation Bot** (interactive ✅/❌ buttons)")

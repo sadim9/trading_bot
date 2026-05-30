@@ -33,8 +33,6 @@ _PERSIST_KEYS = [
     "_discord_webhook_url",
     "_discord_bot_token",
     "_discord_channel_id",
-    "dc_require",
-    "dc_timeout",
     "_email_sender",
     "_email_recipient",
     "_telegram_bot_token",

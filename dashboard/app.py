@@ -1344,10 +1344,13 @@ if src == "tradingview":
         help="TradingView exchange/market. Auto-detect works for most symbols. "
              "Override if you get 'no data' errors — e.g. NASDAQ for US stocks, TVC for gold/oil.",
     )
+    # _tv_exchange_custom is in _PERSIST_KEYS — apply_settings_to_session sets it
+    # before this widget renders, so Streamlit reads session_state automatically.
+    # Do NOT provide value= here or Streamlit ≥1.35 raises StreamlitAPIException.
+    st.session_state.setdefault("_tv_exchange_custom", "")
     _tv_custom_exch = _tvc3.text_input(
         "", placeholder="Or type a custom exchange: EURONEXT, SGX, TSX, MOEX ...",
         label_visibility="collapsed", key="_tv_exchange_custom",
-        value=st.session_state.get("_tv_exchange_custom", ""),
     )
     # Custom text field takes priority; dropdown value used if not Auto-detect
     _tv_exchange_override = (
@@ -1946,7 +1949,9 @@ with chart_col:
         try:
             render_account_panel()
         except Exception as _acct_err:
+            import traceback as _tb
             st.error(f"Accounts tab error: {_acct_err}", icon="⚠️")
+            st.code(_tb.format_exc(), language="python")
 
     with tab_wl:
         try:
@@ -1971,7 +1976,9 @@ with chart_col:
                 st.session_state["df"]          = None   # force reload
                 st.rerun()
         except Exception as _wl_err:
+            import traceback as _tb
             st.error(f"Watchlist tab error: {_wl_err}", icon="⚠️")
+            st.code(_tb.format_exc(), language="python")
 
 # ──────────────── RIGHT: SIGNAL PANEL ─────────────────────────────────────────
 with panel_col:
