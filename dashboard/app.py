@@ -941,6 +941,7 @@ from dashboard.broker_panel import render_broker_panel
 from dashboard.account_panel import render_account_panel
 from dashboard.watchlist import render_watchlist
 from dashboard.markov_tab import render_markov_tab
+from dashboard.ml_tab import render_ml_tab
 from dashboard.crypto_panel import render_crypto_selector, render_24h_ticker, render_quick_switch
 from dashboard.commodity_panel import render_commodity_quickpick
 from dashboard.trade_journal import render_trade_journal
@@ -1658,7 +1659,7 @@ chart_col, panel_col = st.columns([7.5, 2.5], gap="small")
 
 # ──────────────── LEFT: CHART AREA ────────────────────────────────────────────
 with chart_col:
-    tab_chart, tab_bt, tab_mkv, tab_log, tab_acct, tab_wl = st.tabs(["CHART", "BACKTEST", "⛓ MARKOV", "LOG", "⚙ ACCOUNTS", "📊 WATCHLIST"])
+    tab_chart, tab_bt, tab_mkv, tab_ml, tab_log, tab_acct, tab_wl = st.tabs(["CHART", "BACKTEST", "⛓ MARKOV", "🤖 ML", "LOG", "⚙ ACCOUNTS", "📊 WATCHLIST"])
 
     with tab_chart:
         # Chart controls
@@ -1879,6 +1880,19 @@ with chart_col:
             render_markov_tab(st.session_state.get("df"), st.session_state.get("symbol", ""))
         except Exception as _mkv_err:
             st.error(f"Markov tab error: {_mkv_err}", icon="⚠️")
+
+    with tab_ml:
+        try:
+            render_ml_tab(
+                df         = st.session_state.get("df"),
+                symbol     = st.session_state.get("symbol", sym),
+                interval   = st.session_state.get("interval", ivl),
+                light_mode = st.session_state.get("theme", "light") == "light",
+            )
+        except Exception as _ml_err:
+            st.error(f"ML tab error: {_ml_err}", icon="⚠️")
+            import traceback
+            st.code(traceback.format_exc(), language="python")
 
     with tab_log:
         try:
