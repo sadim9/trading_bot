@@ -1347,14 +1347,23 @@ if src == "tradingview":
     _tv_custom_exch = _tvc3.text_input(
         "", placeholder="Or type a custom exchange: EURONEXT, SGX, TSX, MOEX ...",
         label_visibility="collapsed", key="_tv_exchange_custom",
+        value=st.session_state.get("_tv_exchange_custom", ""),
     )
     # Custom text field takes priority; dropdown value used if not Auto-detect
     _tv_exchange_override = (
         _tv_custom_exch.strip().upper() if _tv_custom_exch.strip()
         else (None if _tv_exch_sel == "Auto-detect" else _tv_exch_sel)
     )
-    st.session_state["_tv_exchange"] = _tv_exch_sel
+    # Persist whenever the selection changes so it survives refresh/restart
+    _tv_exch_changed = (
+        st.session_state.get("_tv_exchange") != _tv_exch_sel
+        or st.session_state.get("_tv_exchange_custom", "") != _tv_custom_exch
+        or st.session_state.get("_tv_exchange_override") != _tv_exchange_override
+    )
+    st.session_state["_tv_exchange"]          = _tv_exch_sel
     st.session_state["_tv_exchange_override"] = _tv_exchange_override
+    if _tv_exch_changed:
+        save_settings()
 
 # Hint about BitOasis credentials
 if src == "bitoasis" and not st.session_state.get("bitoasis_connected"):

@@ -49,6 +49,9 @@ _PERSIST_KEYS = [
     "strategy_mode",
     "_tv_username",
     "_tv_password",
+    "_tv_exchange",
+    "_tv_exchange_custom",
+    "_tv_exchange_override",
     "planned_trade_amount",
 ]
 
