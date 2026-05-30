@@ -147,7 +147,10 @@ def render_ml_tab(
     _cache_key = f"ml_result_{symbol}_{model_type}_{horizon}"
     result = sess.get(_cache_key)
 
-    if train_btn or result is None:
+    # ── Only train on explicit button click — NEVER auto-train on page load.
+    # Auto-training blocks Streamlit's render thread for 30-120 seconds,
+    # preventing LOG, ACCOUNTS and WATCHLIST tabs from rendering.
+    if train_btn:
         _train_progress = st.progress(0, text="Initialising …")
         _train_status   = st.empty()
 
@@ -167,7 +170,6 @@ def render_ml_tab(
             )
             sess[_cache_key] = result
             _train_progress.progress(1.0, text="Training complete ✓")
-            time.sleep(0.4)
             _train_progress.empty()
             _train_status.empty()
             st.toast(f"ML model trained for {symbol} — R²(OOS): {result.r2_oos*100:.3f}%", icon="🤖")
@@ -178,7 +180,10 @@ def render_ml_tab(
             return
 
     if result is None:
-        st.info("Click **▶ TRAIN** to train the ML model on the loaded data.")
+        st.info(
+            f"No trained model yet for **{symbol}**. "
+            "Configure the model above and click **▶ TRAIN** to start."
+        )
         return
 
     # ── Generate prediction ────────────────────────────────────────────────────
@@ -526,26 +531,26 @@ def _chart_cv_folds(result, t: dict) -> go.Figure:
 
 
 def _render_multi_horizon(result, df: pd.DataFrame, interval: str, t: dict):
-    """Quick multi-horizon predictions using the already-trained features."""
-    from ml.features import build_features, rank_standardise, FEATURE_COLS
-    from ml.models import make_model
+    """Multi-horizon predictions — only uses already-cached models, never trains."""
+    from ml.predictor import predict as ml_predict, _horizon_label
 
     horizons = [1, 5, 20]
-    current_price = float(df["Close"].iloc[-1])
-
     cols = st.columns(len(horizons))
     for ci, h in enumerate(horizons):
         try:
-            from ml.features import build_dataset
-            from ml.trainer import train as ml_train, _r2_oos_vs_zero
-            from ml.predictor import predict as ml_predict, _horizon_label
-
+            # Reuse the primary result for h=1; show "train to unlock" for others
             cache_key = f"ml_mh_{result.symbol}_{result.model_type}_{h}"
             r_h = st.session_state.get(cache_key)
+            # If not cached, skip (never auto-train here)
             if r_h is None:
-                r_h = ml_train(df, result.symbol, model_type=result.model_type,
-                               horizon=h, n_cv_folds=2)
-                st.session_state[cache_key] = r_h
+                if h == result.horizon:
+                    r_h = result  # reuse the primary trained model
+                else:
+                    cols[ci].caption(f"H={h}: train to unlock")
+                    continue
+
+            if r_h is None:
+                continue
 
             p_h = ml_predict(r_h, df, interval)
             if p_h is None:
