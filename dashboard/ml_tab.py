@@ -464,7 +464,8 @@ def _chart_price_with_signals(result, df: pd.DataFrame, t: dict, symbol: str, pr
     fig.add_trace(go.Scatter(
         x=oos_dates, y=rolling_acc, name="20-bar Dir. Acc %",
         line=dict(color=t["blue"], width=1.5),
-        fill="tozeroy", fillcolor=t["blue"] + "22",
+        fill="tozeroy",
+        fillcolor="rgba(21,85,162,0.13)" if light_mode else "rgba(75,159,255,0.13)",
     ), row=2, col=1)
     fig.add_hline(y=50, line_color=t["border"], line_width=1,
                   line_dash="dot", row=2, col=1)
