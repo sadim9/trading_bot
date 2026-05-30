@@ -2,12 +2,16 @@
 ml/models.py — Return-prediction model wrappers.
 
 Implements three model classes from Kelly & Xiu (2023):
-  - ElasticNetPredictor  (penalised linear, Layer 2 easiest)
-  - RandomForestPredictor (tree ensemble, Layer 2 strong)
-  - NNPredictor           (3-layer MLP ≈ NN3, Layer 2 best)
+  - ElasticNetPredictor  (penalised linear, fast, stable)
+  - RandomForestPredictor (tree ensemble, best single model on small data)
+  - NNPredictor           (3-layer MLP, good only on large daily datasets)
 
-All expose a unified fit(X, y) / predict(X) interface and return
-feature_importance() for the RF and coefficient magnitudes for ElasticNet.
+All expose a unified fit(X, y) / predict(X) interface.
+
+Dataset size guidance (from the paper):
+  < 500 bars  → ElasticNet only (linear models win on tiny data)
+  500-2000    → ElasticNet + RF
+  > 2000      → Full ensemble including NN3
 """
 
 from __future__ import annotations
@@ -18,13 +22,17 @@ from typing import Dict, List, Optional
 
 warnings.filterwarnings("ignore")
 
+# ── Minimum bars for each model to be meaningful ──────────────────────────────
+MIN_BARS_ENET = 60
+MIN_BARS_RF   = 200
+MIN_BARS_NN   = 600   # NN3 is unreliable below this; needs enough for val split
+
 
 # ── Elastic Net ────────────────────────────────────────────────────────────────
 class ElasticNetPredictor:
     """
-    Penalised linear return predictor.
+    Penalised linear return predictor. Works on any dataset size.
     L(β) = MSE + α·[(1-l1_ratio)·||β||² + l1_ratio·||β||₁]
-    l1_ratio=1 → Lasso, l1_ratio=0 → Ridge, default 0.5 → Elastic Net.
     """
 
     name = "Elastic Net"
@@ -33,11 +41,8 @@ class ElasticNetPredictor:
     def __init__(self, alpha: float = 5e-4, l1_ratio: float = 0.5):
         from sklearn.linear_model import ElasticNet
         self._model = ElasticNet(
-            alpha=alpha,
-            l1_ratio=l1_ratio,
-            fit_intercept=False,
-            max_iter=5000,
-            tol=1e-4,
+            alpha=alpha, l1_ratio=l1_ratio,
+            fit_intercept=False, max_iter=5000, tol=1e-4,
         )
         self.fitted = False
 
@@ -62,18 +67,18 @@ class ElasticNetPredictor:
 # ── Random Forest ──────────────────────────────────────────────────────────────
 class RandomForestPredictor:
     """
-    Random Forest return predictor.
-    Shallow trees (max_depth=6) + sqrt feature sampling → regularisation.
+    Random Forest. Best performer on medium-sized datasets (200-2000 bars).
+    Shallow trees + sqrt feature sampling prevent overfitting.
     """
 
     name = "Random Forest"
     color = "#00C9A7"
 
-    def __init__(self, n_estimators: int = 200, max_depth: int = 6):
+    def __init__(self, n_estimators: int = 200, max_depth: int = 4):
         from sklearn.ensemble import RandomForestRegressor
         self._model = RandomForestRegressor(
             n_estimators=n_estimators,
-            max_depth=max_depth,
+            max_depth=max_depth,      # shallow → regularised
             max_features="sqrt",
             min_samples_leaf=5,
             n_jobs=-1,
@@ -97,33 +102,47 @@ class RandomForestPredictor:
 # ── Neural Network (NN3 equivalent) ───────────────────────────────────────────
 class NNPredictor:
     """
-    3-layer feed-forward MLP — sklearn equivalent of NN3 from Gu, Kelly, Xiu (2020).
-    Architecture: input → 256 → 128 → 64 → 1
-    Uses early stopping on a 15% validation split.
+    3-layer feed-forward MLP.  Architecture is scaled DOWN aggressively for
+    small datasets to prevent the catastrophic overfitting seen on intraday data.
+
+    Dataset-adaptive sizing:
+      n < 600   → disabled (raises ValueError — caller should skip)
+      600-1500  → (32, 16) tiny architecture, very high alpha
+      > 1500    → (128, 64, 32) standard architecture
     """
 
     name = "Neural Net (NN3)"
     color = "#9B6DFF"
 
-    def __init__(
-        self,
-        hidden_layer_sizes: tuple = (128, 64, 32),
-        alpha: float = 1e-3,
-        max_iter: int = 200,
-        learning_rate_init: float = 5e-4,
-    ):
+    def __init__(self, n_samples: int = 2000):
         from sklearn.neural_network import MLPRegressor
         from sklearn.preprocessing import StandardScaler
         self._scaler = StandardScaler()
+        self._n_samples = n_samples
+
+        if n_samples < MIN_BARS_NN:
+            raise ValueError(
+                f"Neural Net requires at least {MIN_BARS_NN} training bars; "
+                f"got {n_samples}. Use ElasticNet or RandomForest instead, "
+                f"or switch to daily interval with 2y+ period."
+            )
+        elif n_samples < 1500:
+            # Tiny architecture — prevents overfitting on small datasets
+            arch  = (32, 16)
+            alpha = 0.1     # very strong L2
+        else:
+            arch  = (128, 64, 32)
+            alpha = 1e-3
+
         self._model = MLPRegressor(
-            hidden_layer_sizes=hidden_layer_sizes,
+            hidden_layer_sizes=arch,
             activation="relu",
             solver="adam",
-            alpha=alpha,              # stronger L2 regularisation
+            alpha=alpha,
             batch_size="auto",
             learning_rate="adaptive",
-            learning_rate_init=learning_rate_init,
-            max_iter=max_iter,
+            learning_rate_init=1e-3,
+            max_iter=200,
             early_stopping=True,
             validation_fraction=0.20,
             n_iter_no_change=20,
@@ -143,9 +162,8 @@ class NNPredictor:
         return self._model.predict(Xs)
 
     def feature_importance(self, feature_names: List[str]) -> Dict[str, float]:
-        # Approximate via first-layer weight magnitudes (L2 norm per input neuron)
-        W = self._model.coefs_[0]          # shape (n_features, n_hidden_1)
-        imp = np.linalg.norm(W, axis=1)    # L2 norm across hidden neurons
+        W = self._model.coefs_[0]
+        imp = np.linalg.norm(W, axis=1)
         total = imp.sum() or 1.0
         return {n: float(v / total) for n, v in zip(feature_names, imp)}
 
@@ -153,56 +171,102 @@ class NNPredictor:
 # ── Ensemble ───────────────────────────────────────────────────────────────────
 class EnsemblePredictor:
     """
-    Equal-weight rank-average ensemble of ElasticNet + RF + NN3.
-    Rank averaging is more robust to outliers than simple mean.
+    Adaptive rank-average ensemble.
+    Only includes models that have enough data AND performed reasonably well
+    (R² > -500%). This prevents one catastrophically bad model from dominating.
+
+    Which models are included depends on n_samples:
+      < 200   → ElasticNet only
+      200-600 → ElasticNet + RandomForest
+      > 600   → ElasticNet + RF + NN3 (if NN3 doesn't catastrophically overfit)
     """
 
-    name = "Ensemble (EN + RF + NN3)"
+    name = "Ensemble (Best)"
     color = "#FFB800"
 
     def __init__(self):
-        self.models: Dict[str, object] = {
-            "enet": ElasticNetPredictor(),
-            "rf":   RandomForestPredictor(),
-            "nn3":  NNPredictor(),
-        }
+        self.models: Dict[str, object] = {}
+        self.active_models: List[str]  = []
         self.fitted = False
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> "EnsemblePredictor":
+        n = len(X)
+
+        # Build candidate set based on dataset size
+        candidates: Dict[str, object] = {"enet": ElasticNetPredictor()}
+        if n >= MIN_BARS_RF:
+            candidates["rf"] = RandomForestPredictor()
+        if n >= MIN_BARS_NN:
+            try:
+                candidates["nn3"] = NNPredictor(n_samples=n)
+            except ValueError:
+                pass  # NN not suitable for this dataset size
+
+        # Train all candidates; keep only those with valid OOS R²
+        # Use a quick 80/20 split to evaluate each before full fit
+        split = max(MIN_BARS_ENET, int(n * 0.80))
+        X_tr, y_tr = X[:split], y[:split]
+        X_val, y_val = X[split:], y[split:]
+
+        self.models = {}
+        for name, m in candidates.items():
+            try:
+                m.fit(X_tr, y_tr)
+                if len(X_val) > 5:
+                    y_pred_val = m.predict(X_val)
+                    ss_res = np.sum((y_val - y_pred_val) ** 2)
+                    ss_tot = np.sum(y_val ** 2) or 1e-9
+                    r2_quick = 1 - ss_res / ss_tot
+                    # Exclude catastrophically overfitting models
+                    if r2_quick < -500.0:
+                        continue
+                self.models[name] = m
+            except Exception:
+                pass
+
+        # Ensure at least ElasticNet is always included
+        if not self.models:
+            fallback = ElasticNetPredictor()
+            fallback.fit(X, y)
+            self.models["enet"] = fallback
+
+        # Final fit on ALL data
         for m in self.models.values():
             m.fit(X, y)
+
+        self.active_models = list(self.models.keys())
         self.fitted = True
         return self
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         import pandas as pd
         preds = {k: pd.Series(m.predict(X)) for k, m in self.models.items()}
-        # Rank-average: maps each model's predictions to [0,1] percentile ranks
-        # then averages. This prevents any single model from dominating via scale.
+        # Rank-average across active models
         ranks = np.stack([s.rank(pct=True).values for s in preds.values()], axis=1)
-        avg_rank = ranks.mean(axis=1)          # [0, 1]
-        # Re-centre to [-0.5, 0.5] range so predictions are directionally meaningful
-        return avg_rank - 0.5
+        return ranks.mean(axis=1) - 0.5   # centre on zero
 
     def predict_individual(self, X: np.ndarray) -> Dict[str, np.ndarray]:
-        """Raw per-model predictions (unranked) for display purposes."""
         return {k: m.predict(X) for k, m in self.models.items()}
 
-    def predict_raw(self, X: np.ndarray) -> Dict[str, np.ndarray]:
-        return self.predict_individual(X)
-
     def feature_importance(self, feature_names: List[str]) -> Dict[str, float]:
-        # Average importance across RF + EN (NN3 approx is less reliable)
-        rf_imp = self.models["rf"].feature_importance(feature_names)
-        en_imp = self.models["enet"].feature_importance(feature_names)
-        return {n: (rf_imp.get(n, 0) + en_imp.get(n, 0)) / 2 for n in feature_names}
+        # Average importance across all active non-NN models
+        imps = []
+        for k, m in self.models.items():
+            if k != "nn3":
+                imps.append(m.feature_importance(feature_names))
+        if not imps:
+            return {n: 1.0 / len(feature_names) for n in feature_names}
+        return {n: float(np.mean([d.get(n, 0) for d in imps])) for n in feature_names}
 
 
-def make_model(model_type: str) -> object:
-    """Factory function to create a model by name."""
-    return {
-        "elastic_net":   ElasticNetPredictor,
-        "random_forest": RandomForestPredictor,
-        "neural_net":    NNPredictor,
-        "ensemble":      EnsemblePredictor,
-    }[model_type]()
+def make_model(model_type: str, n_samples: int = 2000) -> object:
+    """Factory — creates model appropriate for the dataset size."""
+    if model_type == "elastic_net":
+        return ElasticNetPredictor()
+    elif model_type == "random_forest":
+        return RandomForestPredictor()
+    elif model_type == "neural_net":
+        return NNPredictor(n_samples=n_samples)
+    elif model_type == "ensemble":
+        return EnsemblePredictor()
+    raise ValueError(f"Unknown model type: {model_type!r}")

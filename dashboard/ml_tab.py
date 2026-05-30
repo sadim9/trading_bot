@@ -1,26 +1,16 @@
 """
 dashboard/ml_tab.py — Machine Learning Analysis Tab for Apex Terminal.
 
-Renders the full ML tab inside app.py's tab layout.
-
-Features:
-  - Model training controls (model type, horizon, CV folds)
-  - Live training progress bar
-  - Out-of-sample metrics dashboard (R², Directional Acc, Sharpe, MAE)
-  - Interactive charts:
-      • Actual vs Predicted returns scatter
-      • Rolling OOS predictions vs actual price
-      • Feature importance bar chart
-      • CV fold R² breakdown
-      • Prediction confidence gauge
-      • Multi-horizon price targets
-  - Real-time prediction card with BUY/SELL/HOLD signal
-  - All charts theme-aware (dark/light) and mobile-friendly
+Key design principles:
+  - Never auto-trains; all training is explicit (button click only)
+  - Price-level charts instead of raw return % (intuitive for traders)
+  - Clear data quality guidance
+  - Capped metric display (no -86000% R² confusing users)
+  - Mobile-friendly Plotly charts
 """
 
 from __future__ import annotations
 
-import time
 import warnings
 import numpy as np
 import pandas as pd
@@ -36,12 +26,9 @@ try:
 except ImportError:
     PLOTLY_OK = False
 
-from dashboard.charts import THEME
-
 
 # ── Theme helpers ──────────────────────────────────────────────────────────────
 def _th(light_mode: bool) -> dict:
-    """Return colour tokens for current theme."""
     if light_mode:
         return dict(
             bg="#F2F6FC", surface="#E8EEF8", card="#FFFFFF",
@@ -59,39 +46,57 @@ def _th(light_mode: bool) -> dict:
     )
 
 
-def _plotly_layout(t: dict, title: str = "", height: int = 360) -> dict:
+def _plotly_base(t: dict, title: str = "", height: int = 360) -> dict:
     return dict(
-        title=dict(text=title, font=dict(size=12, color=t["text_sec"], family="IBM Plex Mono")),
+        title=dict(text=title, font=dict(size=11, color=t["text_sec"], family="IBM Plex Mono")),
         paper_bgcolor=t["bg"], plot_bgcolor=t["surface"],
         font=dict(family="IBM Plex Mono", size=10, color=t["text"]),
         height=height,
-        margin=dict(l=40, r=20, t=40, b=40),
+        margin=dict(l=50, r=20, t=40, b=40),
         xaxis=dict(gridcolor=t["grid"], showgrid=True, zeroline=False,
                    tickfont=dict(size=9, color=t["text_mute"])),
         yaxis=dict(gridcolor=t["grid"], showgrid=True, zeroline=True,
                    zerolinecolor=t["border"], tickfont=dict(size=9, color=t["text_mute"])),
-        legend=dict(bgcolor=t["card"], bordercolor=t["border"], borderwidth=1,
-                    font=dict(size=9, color=t["text_sec"])),
+        legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor=t["border"], borderwidth=0,
+                    font=dict(size=9, color=t["text_sec"]), orientation="h",
+                    yanchor="bottom", y=1.02, xanchor="left", x=0),
+        hovermode="x unified",
     )
 
 
-def _signal_css_class(signal: str) -> str:
-    return {"BUY": "qt-signal-buy", "SELL": "qt-signal-sell"}.get(signal, "qt-signal-hold")
+def _cap_r2(v: float) -> str:
+    """Cap displayed R² to ±500% to prevent confusing huge negatives."""
+    if v < -5.0:
+        return f"< -500%"
+    return f"{v*100:.4f}%"
 
 
-# ── Main render function ───────────────────────────────────────────────────────
+def _quality_badge(quality: str, t: dict) -> str:
+    cfg = {
+        "good":         ("✓ GOOD DATA",        t["green"],  "≥2000 bars — full model suite active"),
+        "fair":         ("~ FAIR DATA",         t["amber"],  "600–2000 bars — NN3 uses smaller architecture"),
+        "poor":         ("⚠ LIMITED DATA",      t["red"],    "200–600 bars — ElasticNet + RF only"),
+        "insufficient": ("✗ INSUFFICIENT DATA", t["red"],    "<200 bars — increase period or use daily interval"),
+    }.get(quality, ("? UNKNOWN", t["text_mute"], ""))
+    label, color, tip = cfg
+    return (
+        f'<span style="background:{color}22;border:1px solid {color}55;'
+        f'border-radius:3px;padding:2px 8px;font-size:9px;letter-spacing:.1em;'
+        f'color:{color};font-family:IBM Plex Mono">{label}</span> '
+        f'<span style="font-size:9px;color:{t["text_mute"]}">{tip}</span>'
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  MAIN RENDER
+# ─────────────────────────────────────────────────────────────────────────────
 def render_ml_tab(
     df: pd.DataFrame,
     symbol: str,
     interval: str = "1d",
     light_mode: bool = True,
 ):
-    """
-    Render the full ML tab content.
-
-    Called from app.py inside the ML tab context.
-    """
-    t = _th(light_mode)
+    t   = _th(light_mode)
     sess = st.session_state
 
     st.markdown(
@@ -105,192 +110,201 @@ def render_ml_tab(
 
     if df is None or len(df) < 60:
         st.warning(
-            "⚠️ Need at least **60 bars** to train the ML models. "
-            "Load a longer period (e.g. 1y daily) and try again."
+            "⚠️ Need at least **60 bars** to train. "
+            "For best results: switch interval to **1d** and period to **2y**."
         )
         return
 
-    # ── Guard: clear stale results if symbol changed since last train ──────────
-    _last_ml_sym = sess.get("_ml_active_symbol")
-    if _last_ml_sym and _last_ml_sym != symbol:
+    # ── Data quality pre-check ─────────────────────────────────────────────────
+    n_bars = len(df)
+    if n_bars < 500:
+        quality_hint = "fair" if n_bars >= 200 else "poor"
+    elif n_bars < 2000:
+        quality_hint = "fair"
+    else:
+        quality_hint = "good"
+
+    # ── Symbol guard — purge stale cached results on ticker change ─────────────
+    _last_sym = sess.get("_ml_active_symbol")
+    if _last_sym and _last_sym != symbol:
         for _k in [k for k in list(sess.keys())
                    if k.startswith("ml_result_") or k.startswith("ml_mh_")]:
             del sess[_k]
     sess["_ml_active_symbol"] = symbol
 
-    # ── Config expander — open when no result exists yet for this symbol ───────
+    # ── Model configuration ────────────────────────────────────────────────────
     _has_any_result = any(k.startswith(f"ml_result_{symbol}_") for k in sess.keys())
     with st.expander("⚙ MODEL CONFIGURATION", expanded=not _has_any_result):
         c1, c2, c3, c4 = st.columns([2, 1.5, 1.5, 1])
-
-        model_labels = ["Ensemble (Best)", "Neural Net NN3", "Random Forest", "Elastic Net"]
-        model_vals   = ["ensemble", "neural_net", "random_forest", "elastic_net"]
+        model_labels = ["Ensemble (Best)", "Random Forest", "Elastic Net", "Neural Net NN3"]
+        model_vals   = ["ensemble",        "random_forest", "elastic_net", "neural_net"]
         model_label  = c1.selectbox(
-            "Model", model_labels,
-            index=0,
-            help="Ensemble combines all 3 models (best OOS performance)",
+            "Model", model_labels, index=0,
+            help="Ensemble combines the best models for your dataset size. "
+                 "Neural Net requires 600+ bars and works best with daily data.",
         )
         model_type = model_vals[model_labels.index(model_label)]
 
         horizon = c2.selectbox(
-            "Horizon", [1, 3, 5, 10, 20],
-            index=0,
+            "Horizon", [1, 3, 5, 10, 20], index=0,
             format_func=lambda x: f"{x} bar{'s' if x>1 else ''}",
-            help="Bars ahead to predict",
+            help="Bars ahead to predict. Shorter horizons = more frequent signals.",
         )
-
-        n_cv = c3.selectbox("CV Folds", [3, 5, 7], index=0)
-
+        n_cv = c3.selectbox("CV Folds", [3, 5], index=0)
         train_btn = c4.button("▶ TRAIN", type="primary", use_container_width=True)
 
-    # ── Training ───────────────────────────────────────────────────────────────
+        # Data quality inline guidance
+        st.markdown(
+            f'<div style="margin-top:8px">{_quality_badge(quality_hint, t)}</div>',
+            unsafe_allow_html=True,
+        )
+        if n_bars < 2000:
+            st.caption(
+                f"💡 **Tip:** You have {n_bars} bars of {interval} data. "
+                "For the best ML results, switch to **1d** interval with **2y** period "
+                "(≈500 bars) — daily data has cleaner signal-to-noise than intraday."
+            )
+
+    # ── Training (only on button click) ───────────────────────────────────────
     _cache_key = f"ml_result_{symbol}_{model_type}_{horizon}"
     result = sess.get(_cache_key)
 
-    # ── Only train on explicit button click — NEVER auto-train on page load.
-    # Auto-training blocks Streamlit's render thread for 30-120 seconds,
-    # preventing LOG, ACCOUNTS and WATCHLIST tabs from rendering.
     if train_btn:
-        _train_progress = st.progress(0, text="Initialising …")
-        _train_status   = st.empty()
+        _prog = st.progress(0, text="Initialising …")
+        _stat = st.empty()
 
         def _cb(pct: int, msg: str):
-            _train_progress.progress(pct / 100, text=msg)
-            _train_status.caption(msg)
+            _prog.progress(pct / 100, text=msg)
+            _stat.caption(msg)
 
         try:
             from ml.trainer import train as ml_train
             result = ml_train(
-                df=df,
-                symbol=symbol,
-                model_type=model_type,
-                horizon=horizon,
-                n_cv_folds=n_cv,
+                df=df, symbol=symbol, model_type=model_type,
+                horizon=horizon, n_cv_folds=n_cv,
                 progress_callback=_cb,
             )
             sess[_cache_key] = result
-            _train_progress.progress(1.0, text="Training complete ✓")
-            _train_progress.empty()
-            _train_status.empty()
-            st.toast(f"ML model trained for {symbol} — R²(OOS): {result.r2_oos*100:.3f}%", icon="🤖")
+            _prog.progress(1.0, text="Training complete ✓")
+            _prog.empty()
+            _stat.empty()
+            st.toast(
+                f"✅ {model_type.replace('_',' ').title()} trained on {symbol} "
+                f"— Dir. Acc: {result.directional_acc*100:.1f}%",
+                icon="🤖",
+            )
         except Exception as e:
-            _train_progress.empty()
-            _train_status.empty()
+            _prog.empty()
+            _stat.empty()
             st.error(f"Training failed: {e}")
             return
 
     if result is None:
         st.info(
-            f"No trained model yet for **{symbol}**. "
-            "Configure the model above and click **▶ TRAIN** to start."
+            f"No trained model for **{symbol}** yet. "
+            "Select your model above and click **▶ TRAIN** to start."
         )
         return
 
-    # ── Generate prediction ────────────────────────────────────────────────────
+    # ── Generate current prediction ────────────────────────────────────────────
     from ml.predictor import predict as ml_predict
     pred = ml_predict(result, df, interval)
 
     # ═══════════════════════════════════════════════════════════════════════════
-    #  PREDICTION CARD  (top section)
+    #  PREDICTION SIGNAL CARD
     # ═══════════════════════════════════════════════════════════════════════════
     _render_prediction_card(pred, result, t, interval)
 
-    st.markdown("<hr style='margin:12px 0'>", unsafe_allow_html=True)
+    st.markdown(
+        f'<div style="margin:6px 0 10px">{_quality_badge(result.data_quality, t)}</div>',
+        unsafe_allow_html=True,
+    )
 
     # ═══════════════════════════════════════════════════════════════════════════
     #  METRICS STRIP
     # ═══════════════════════════════════════════════════════════════════════════
     _render_metrics_strip(result, t)
 
-    st.markdown("<hr style='margin:12px 0'>", unsafe_allow_html=True)
+    st.markdown("<hr style='margin:10px 0 14px'>", unsafe_allow_html=True)
 
     # ═══════════════════════════════════════════════════════════════════════════
-    #  CHARTS — 2-column layout
+    #  CHARTS — price prediction overlay (top row) + diagnostics (bottom row)
     # ═══════════════════════════════════════════════════════════════════════════
-    ch_left, ch_right = st.columns([1, 1], gap="small")
-
-    with ch_left:
+    left, right = st.columns([1.1, 0.9], gap="small")
+    with left:
         st.plotly_chart(
-            _chart_oos_overlay(result, df, t, symbol),
-            use_container_width=True,
-            config=dict(displayModeBar=False),
+            _chart_price_with_signals(result, df, t, symbol, pred),
+            use_container_width=True, config=dict(displayModeBar=False),
         )
-
-    with ch_right:
+    with right:
         st.plotly_chart(
             _chart_feature_importance(result, t),
-            use_container_width=True,
-            config=dict(displayModeBar=False),
+            use_container_width=True, config=dict(displayModeBar=False),
         )
 
-    ch2_left, ch2_right = st.columns([1, 1], gap="small")
-
-    with ch2_left:
+    left2, right2 = st.columns([1, 1], gap="small")
+    with left2:
         st.plotly_chart(
             _chart_actual_vs_predicted(result, t),
-            use_container_width=True,
-            config=dict(displayModeBar=False),
+            use_container_width=True, config=dict(displayModeBar=False),
         )
-
-    with ch2_right:
+    with right2:
         st.plotly_chart(
             _chart_cv_folds(result, t),
-            use_container_width=True,
-            config=dict(displayModeBar=False),
+            use_container_width=True, config=dict(displayModeBar=False),
         )
 
     # ═══════════════════════════════════════════════════════════════════════════
-    #  MULTI-HORIZON TARGETS
+    #  MULTI-HORIZON TARGETS (cached only — no extra training)
     # ═══════════════════════════════════════════════════════════════════════════
-    if pred:
-        st.markdown('<div class="qt-section">MULTI-HORIZON PRICE TARGETS</div>', unsafe_allow_html=True)
-        _render_multi_horizon(result, df, interval, t)
+    st.markdown('<div class="qt-section">MULTI-HORIZON PRICE TARGETS</div>',
+                unsafe_allow_html=True)
+    _render_multi_horizon(result, df, interval, t)
 
     # ═══════════════════════════════════════════════════════════════════════════
-    #  REASONING / EXPLANATION
+    #  MODEL REASONING
     # ═══════════════════════════════════════════════════════════════════════════
     if pred and pred.reasoning:
         with st.expander("💡 MODEL REASONING", expanded=True):
             for r in pred.reasoning:
                 st.markdown(f"• {r}")
 
-    # Training metadata
     with st.expander("ℹ MODEL DETAILS", expanded=False):
-        col_a, col_b, col_c, col_d = st.columns(4)
-        col_a.metric("Bars Used",     f"{result.n_bars}")
-        col_b.metric("Features",      f"{result.n_features}")
-        col_c.metric("Train Time",    f"{result.train_time_s:.1f}s")
-        col_d.metric("Horizon",       f"{result.horizon} bar(s)")
+        d1, d2, d3, d4 = st.columns(4)
+        d1.metric("Bars Used",   f"{result.n_bars}")
+        d2.metric("Features",    f"{result.n_features}")
+        d3.metric("Train Time",  f"{result.train_time_s:.1f}s")
+        d4.metric("Horizon",     f"{result.horizon} bar(s)")
+        if result.active_models:
+            st.caption(f"Active models: **{', '.join(result.active_models)}**")
         st.caption(
             f"Model: **{result.model_type}** · Symbol: {result.symbol} · "
-            f"CV Folds: {len(result.cv_folds)}"
+            f"CV Folds: {len(result.cv_folds)} · Data quality: **{result.data_quality}**"
         )
 
 
-# ── Sub-renderers ──────────────────────────────────────────────────────────────
-
+# ─────────────────────────────────────────────────────────────────────────────
+#  PREDICTION CARD
+# ─────────────────────────────────────────────────────────────────────────────
 def _render_prediction_card(pred, result, t: dict, interval: str):
-    """Big signal card at the top of the ML tab."""
     if pred is None:
         st.info("Generating prediction …")
         return
 
-    sig_class = _signal_css_class(pred.signal)
-    ret_str   = f"{pred.predicted_return*100:+.3f}%"
-    px_str    = f"${pred.predicted_price:,.4f}"
-    cur_str   = f"${pred.current_price:,.4f}"
-    conf_str  = f"{pred.confidence:.0f}%"
+    sig_class = {"BUY": "qt-signal-buy", "SELL": "qt-signal-sell"}.get(pred.signal, "qt-signal-hold")
+    sig_color = {"BUY": t["green"], "SELL": t["red"]}.get(pred.signal, t["amber"])
     sig_icon  = {"BUY": "▲", "SELL": "▼", "HOLD": "◼"}.get(pred.signal, "◼")
-    sig_color = {"BUY": t["green"], "SELL": t["red"], "HOLD": t["amber"]}.get(pred.signal, t["amber"])
+    ret_str   = f"{pred.predicted_return*100:+.3f}%"
+    conf_col  = t["green"] if pred.confidence >= 60 else (t["amber"] if pred.confidence >= 45 else t["red"])
 
-    # Individual model preds
+    # Individual model predictions
     indiv_html = ""
     if pred.individual_preds:
-        model_colors = {"enet": t["blue"], "rf": t["green"], "nn3": t["purple"]}
-        model_labels = {"enet": "ElasticNet", "rf": "Random Forest", "nn3": "Neural Net"}
+        m_labels = {"enet": "ElasticNet", "rf": "Random Forest", "nn3": "Neural Net"}
+        m_colors = {"enet": t["blue"], "rf": t["green"], "nn3": t["purple"]}
         for mk, mv in pred.individual_preds.items():
-            col = model_colors.get(mk, t["text_sec"])
-            lbl = model_labels.get(mk, mk)
+            col = m_colors.get(mk, t["text_sec"])
+            lbl = m_labels.get(mk, mk)
             indiv_html += (
                 f'<span style="color:{col};font-size:10px;margin-right:14px">'
                 f'{lbl}: {mv*100:+.3f}%</span>'
@@ -300,133 +314,205 @@ def _render_prediction_card(pred, result, t: dict, interval: str):
 <div class="qt-signal {sig_class}">
   <div class="qt-signal-label">
     <span class="qt-pulse" style="background:{sig_color}"></span>
-    {pred.signal_strength} {pred.signal} &nbsp;
-    <span style="font-size:20px;color:{sig_color}">{sig_icon} {ret_str}</span>
-    <span style="font-size:13px;color:{t['text_sec']};font-weight:400">
-      &nbsp;next {pred.horizon_label}
+    {pred.signal_strength}&nbsp;{pred.signal}&nbsp;
+    <span style="font-size:22px;color:{sig_color}">{sig_icon}&nbsp;{ret_str}</span>
+    <span style="font-size:12px;color:{t['text_sec']};font-weight:400">
+      &nbsp;· next {pred.horizon_label}
     </span>
   </div>
-  <div class="qt-signal-meta" style="margin-top:8px;display:flex;gap:24px;flex-wrap:wrap">
-    <span>NOW <b style="color:{t['text']}">{cur_str}</b></span>
-    <span>TARGET <b style="color:{sig_color}">{px_str}</b></span>
-    <span>CONFIDENCE <b style="color:{t['text']}">{conf_str}</b></span>
+  <div style="margin-top:8px;display:flex;gap:20px;flex-wrap:wrap;font-family:IBM Plex Mono;font-size:10px;color:{t['text_sec']}">
+    <span>NOW <b style="color:{t['text']}">${pred.current_price:,.4f}</b></span>
+    <span>TARGET <b style="color:{sig_color}">${pred.predicted_price:,.4f}</b></span>
+    <span>CONFIDENCE <b style="color:{conf_col}">{pred.confidence:.0f}%</b></span>
     <span>SL <b style="color:{t['red']}">${pred.stop_loss:,.4f}</b></span>
     <span>TP <b style="color:{t['green']}">${pred.take_profit:,.4f}</b></span>
     <span>R/R <b style="color:{t['text']}">{pred.risk_reward:.1f}×</b></span>
   </div>
-  <div style="margin-top:6px">{indiv_html}</div>
+  {f'<div style="margin-top:6px">{indiv_html}</div>' if indiv_html else ''}
 </div>
 """, unsafe_allow_html=True)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  METRICS STRIP
+# ─────────────────────────────────────────────────────────────────────────────
 def _render_metrics_strip(result, t: dict):
-    """Row of model performance metrics."""
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1, c2, c3, c4, c5 = st.columns(5)
 
-    r2_pct     = result.r2_oos * 100
-    r2_cv_pct  = result.r2_oos_cv * 100
-    dir_pct    = result.directional_acc * 100
-    sharpe     = result.sharpe_est
-    mae_bps    = result.mae * 10000
+    r2_str   = _cap_r2(result.r2_oos)
+    r2cv_str = _cap_r2(result.r2_oos_cv)
+    dir_pct  = result.directional_acc * 100
+    dir_ok   = dir_pct > 52
+    sharpe   = result.sharpe_est
 
-    # R² colour coding (positive = good in this context even if small)
-    r2_delta = "✓" if r2_pct > 0 else "✗"
-
-    c1.metric("OOS R² (vs zero)", f"{r2_pct:.4f}%", r2_delta)
-    c2.metric("CV Avg R²",        f"{r2_cv_pct:.4f}%")
-    c3.metric("Directional Acc",  f"{dir_pct:.1f}%",
-              "above chance" if dir_pct > 52 else "at/below chance")
-    c4.metric("Est. Sharpe",      f"{sharpe:.2f}",
+    c1.metric("OOS R²",         r2_str,  "✓" if result.r2_oos > 0 else "✗ negative")
+    c2.metric("CV Avg R²",      r2cv_str)
+    c3.metric("Directional Acc", f"{dir_pct:.1f}%",
+              "above chance" if dir_ok else "≤ random")
+    c4.metric("Est. Sharpe",    f"{sharpe:.2f}",
               "positive" if sharpe > 0 else "negative")
-    c5.metric("MAE",              f"{mae_bps:.1f} bps")
-    n_folds = len(result.cv_folds)
-    c6.metric("CV Folds",         f"{n_folds}")
+    c5.metric("Train Bars",     f"{result.n_bars}")
 
-    # Individual model R² breakdown (ensemble only)
+    # Interpretation guide
+    if result.r2_oos < -5.0 or dir_pct < 45:
+        st.warning(
+            "⚠️ **Low model quality** — negative R² and sub-random directional accuracy "
+            "indicate the model is fitting noise, not signal. "
+            "**Recommended fix:** Switch to **1d interval + 2y period** (click ⟳ LOAD first, then ▶ TRAIN). "
+            "Daily data has 10× better signal-to-noise than 5-minute intraday data.",
+            icon="📊",
+        )
+    elif dir_pct < 52:
+        st.info(
+            "ℹ Model is at/near random (directional accuracy ≈ 50%). "
+            "Consider using a longer history or daily data for stronger signal."
+        )
+
+    # Individual model R² breakdown (ensemble)
     if result.individual_r2:
-        cols = st.columns(len(result.individual_r2))
         labels = {"enet": "ElasticNet R²", "rf": "Random Forest R²", "nn3": "Neural Net R²"}
+        cols = st.columns(len(result.individual_r2))
         for ci, (mk, mv) in zip(cols, result.individual_r2.items()):
-            ci.metric(labels.get(mk, mk), f"{mv*100:.4f}%")
+            cols[ci].metric(labels.get(mk, mk), _cap_r2(mv))
 
 
-def _hex_to_rgba(hex_color: str, alpha: float = 0.12) -> str:
-    """Convert hex colour string to rgba(r,g,b,alpha)."""
-    h = hex_color.lstrip("#")
-    if len(h) == 6:
-        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-        return f"rgba({r},{g},{b},{alpha})"
-    return f"rgba(0,201,167,{alpha})"
-
-
-def _chart_oos_overlay(result, df: pd.DataFrame, t: dict, symbol: str) -> go.Figure:
-    """Actual price + ML predicted return overlay (rolling OOS test period)."""
-    if not result.oos_dates:
+# ─────────────────────────────────────────────────────────────────────────────
+#  CHART 1: Price chart with ML signal overlay
+# ─────────────────────────────────────────────────────────────────────────────
+def _chart_price_with_signals(result, df: pd.DataFrame, t: dict, symbol: str, pred) -> go.Figure:
+    """
+    Show actual price (candlestick) for the recent OOS period,
+    overlaid with ML BUY/SELL signals based on OOS predictions.
+    Also marks the current price and ML target.
+    """
+    if not result.oos_dates or len(result.oos_dates) < 5:
         fig = go.Figure()
-        fig.update_layout(**_plotly_layout(t, "OOS Predictions vs Actual"))
+        fig.update_layout(**_plotly_base(t, "Price + ML Signals"))
         return fig
 
-    dates = pd.to_datetime(result.oos_dates)
-    actual   = np.array(result.oos_actual)   * 100
-    predicted = np.array(result.oos_predicted) * 100
+    oos_dates = pd.to_datetime(result.oos_dates)
+    oos_pred  = np.array(result.oos_predicted)
+    oos_act   = np.array(result.oos_actual)
 
-    # Cumulative return of long/short strategy
-    ls_pnl = np.where(predicted > 0, actual, -actual)
-    cum_ls = np.cumprod(1 + ls_pnl / 100) - 1
+    # Align df to OOS period
+    df_oos = df.reindex(oos_dates, method="nearest").dropna(subset=["Close"])
 
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                        row_heights=[0.55, 0.45], vertical_spacing=0.05)
+                        row_heights=[0.70, 0.30], vertical_spacing=0.04)
 
-    # Top: Actual vs predicted bar returns
+    # ── Candlestick / price line ──────────────────────────────────────────────
+    if len(df_oos) > 10:
+        fig.add_trace(go.Candlestick(
+            x=df_oos.index,
+            open=df_oos["Open"], high=df_oos["High"],
+            low=df_oos["Low"],   close=df_oos["Close"],
+            name="Price",
+            increasing_line_color=t["green"], decreasing_line_color=t["red"],
+            increasing_fillcolor=t["green"]+"44", decreasing_fillcolor=t["red"]+"44",
+            showlegend=False,
+        ), row=1, col=1)
+    else:
+        fig.add_trace(go.Scatter(
+            x=df_oos.index, y=df_oos["Close"],
+            name="Price", line=dict(color=t["text_sec"], width=1.5),
+        ), row=1, col=1)
+
+    # ── BUY / SELL signals from OOS predictions ───────────────────────────────
+    buy_idx  = np.where(oos_pred > 0.003)[0]   # > +0.3% → BUY signal
+    sell_idx = np.where(oos_pred < -0.003)[0]  # < -0.3% → SELL signal
+
+    if len(buy_idx) and len(df_oos):
+        buy_dates  = [oos_dates[i] for i in buy_idx if i < len(df_oos)]
+        buy_prices = [df_oos["Low"].iloc[min(i, len(df_oos)-1)] * 0.998 for i in buy_idx if i < len(df_oos)]
+        if buy_dates:
+            fig.add_trace(go.Scatter(
+                x=buy_dates, y=buy_prices, mode="markers", name="ML BUY",
+                marker=dict(symbol="triangle-up", size=10, color=t["green"], opacity=0.9),
+            ), row=1, col=1)
+
+    if len(sell_idx) and len(df_oos):
+        sell_dates  = [oos_dates[i] for i in sell_idx if i < len(df_oos)]
+        sell_prices = [df_oos["High"].iloc[min(i, len(df_oos)-1)] * 1.002 for i in sell_idx if i < len(df_oos)]
+        if sell_dates:
+            fig.add_trace(go.Scatter(
+                x=sell_dates, y=sell_prices, mode="markers", name="ML SELL",
+                marker=dict(symbol="triangle-down", size=10, color=t["red"], opacity=0.9),
+            ), row=1, col=1)
+
+    # ── Current price + ML target ─────────────────────────────────────────────
+    if pred and len(df_oos):
+        last_date = df_oos.index[-1]
+        fig.add_hline(
+            y=pred.current_price, line_color=t["amber"], line_width=1,
+            line_dash="dot", annotation_text=f"Now ${pred.current_price:,.2f}",
+            annotation_font_color=t["amber"], annotation_font_size=9,
+            row=1, col=1,
+        )
+        sig_col = {"BUY": t["green"], "SELL": t["red"]}.get(pred.signal, t["text_mute"])
+        fig.add_hline(
+            y=pred.predicted_price, line_color=sig_col, line_width=1.5,
+            line_dash="dash",
+            annotation_text=f"ML Target ${pred.predicted_price:,.2f}",
+            annotation_font_color=sig_col, annotation_font_size=9,
+            row=1, col=1,
+        )
+
+    # ── Prediction accuracy bar (bottom subplot) ──────────────────────────────
+    correct = (np.sign(oos_act) == np.sign(oos_pred)).astype(float)
+    rolling_acc = pd.Series(correct).rolling(20, min_periods=5).mean() * 100
     fig.add_trace(go.Scatter(
-        x=dates, y=actual, name="Actual Return",
-        line=dict(color=t["text_sec"], width=1), opacity=0.6,
-    ), row=1, col=1)
-    fig.add_trace(go.Scatter(
-        x=dates, y=predicted, name="ML Predicted",
+        x=oos_dates, y=rolling_acc, name="20-bar Dir. Acc %",
         line=dict(color=t["blue"], width=1.5),
-    ), row=1, col=1)
-
-    # Bottom: Cumulative L/S strategy
-    fig.add_trace(go.Scatter(
-        x=dates, y=cum_ls * 100,
-        name="Long/Short Cumulative %",
-        fill="tozeroy",
-        line=dict(color=t["green"], width=1.5),
-        fillcolor=_hex_to_rgba(t["green"], 0.12),
+        fill="tozeroy", fillcolor=t["blue"] + "22",
     ), row=2, col=1)
+    fig.add_hline(y=50, line_color=t["border"], line_width=1,
+                  line_dash="dot", row=2, col=1)
 
-    lay = _plotly_layout(t, f"OOS: Predicted vs Actual · {symbol}", height=380)
-    lay["yaxis"]  = {**lay.get("yaxis", {}), "title": dict(text="Return %", font=dict(size=9))}
-    lay["yaxis2"] = dict(gridcolor=t["grid"], showgrid=True, zeroline=True,
-                         zerolinecolor=t["border"], tickfont=dict(size=9, color=t["text_mute"]),
-                         title=dict(text="L/S Cumulative %", font=dict(size=9)))
+    lay = _plotly_base(t, f"ML Signals on Price · {symbol}", height=420)
+    lay["xaxis2"] = dict(gridcolor=t["grid"], showgrid=True, zeroline=False,
+                         tickfont=dict(size=9, color=t["text_mute"]))
+    lay["yaxis"]  = {**lay.get("yaxis", {}), "title": dict(text="Price", font=dict(size=9))}
+    lay["yaxis2"] = dict(gridcolor=t["grid"], showgrid=True, zeroline=False,
+                         tickfont=dict(size=9, color=t["text_mute"]),
+                         title=dict(text="Dir. Acc %", font=dict(size=9)),
+                         range=[0, 100])
+    lay["xaxis_rangeslider_visible"] = False
     fig.update_layout(**lay)
     return fig
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  CHART 2: Feature importance
+# ─────────────────────────────────────────────────────────────────────────────
 def _chart_feature_importance(result, t: dict) -> go.Figure:
-    """Horizontal bar chart of feature importance."""
     imp = result.feature_importance
     if not imp:
         fig = go.Figure()
-        fig.update_layout(**_plotly_layout(t, "Feature Importance"))
+        fig.update_layout(**_plotly_base(t, "Feature Importance"))
         return fig
 
     sorted_imp = sorted(imp.items(), key=lambda x: x[1], reverse=True)[:15]
-    labels = [_fmt_feat_name(k) for k, _ in sorted_imp]
+    labels = [_fmt_feat(k) for k, _ in sorted_imp]
     values = [v for _, v in sorted_imp]
 
     # Colour by category
+    cat_colors = {
+        "momentum": t["amber"], "reversal": t["amber"],
+        "oscillator": t["purple"], "reversion": t["purple"],
+        "volatility": t["red"],
+        "trend": t["blue"],
+        "volume": t["green"],
+        "breakout": t["text_sec"],
+    }
     colors = []
     for k, _ in sorted_imp:
-        if "ret" in k or "accel" in k:
+        if any(x in k for x in ("ret_", "accel")):
             colors.append(t["amber"])
-        elif "rsi" in k or "bb" in k or "stoch" in k:
+        elif any(x in k for x in ("rsi", "bb", "stoch")):
             colors.append(t["purple"])
-        elif "vol" in k or "atr" in k:
+        elif any(x in k for x in ("atr", "vol", "realvol")):
             colors.append(t["red"])
-        elif "ema" in k or "macd" in k:
+        elif any(x in k for x in ("ema", "macd")):
             colors.append(t["blue"])
         else:
             colors.append(t["green"])
@@ -436,89 +522,91 @@ def _chart_feature_importance(result, t: dict) -> go.Figure:
         marker=dict(color=colors, opacity=0.85),
         hovertemplate="%{y}: %{x:.4f}<extra></extra>",
     ))
-    lay = _plotly_layout(t, "Feature Importance (Top 15)", height=380)
+    lay = _plotly_base(t, "Feature Importance (Top 15)", height=380)
     lay["yaxis"] = {**lay.get("yaxis", {}), "autorange": "reversed"}
     lay["xaxis"] = {**lay.get("xaxis", {}), "title": dict(text="Importance", font=dict(size=9))}
     fig.update_layout(**lay)
     return fig
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  CHART 3: Actual vs Predicted scatter
+# ─────────────────────────────────────────────────────────────────────────────
 def _chart_actual_vs_predicted(result, t: dict) -> go.Figure:
-    """Scatter: actual vs predicted return (OOS test period)."""
     if not result.oos_actual:
         fig = go.Figure()
-        fig.update_layout(**_plotly_layout(t, "Actual vs Predicted"))
+        fig.update_layout(**_plotly_base(t, "Actual vs Predicted"))
         return fig
 
     actual    = np.array(result.oos_actual)   * 100
     predicted = np.array(result.oos_predicted) * 100
 
-    # Colour by correct direction
+    # Clip extreme predictions for display clarity
+    p95 = np.percentile(np.abs(predicted), 95)
+    predicted_disp = np.clip(predicted, -p95 * 3, p95 * 3)
+
     correct = (np.sign(actual) == np.sign(predicted))
     colors  = [t["green"] if c else t["red"] for c in correct]
 
-    # Perfect prediction line
-    mx = max(np.abs(actual).max(), np.abs(predicted).max()) * 1.1
-    line_x = [-mx, mx]
-
+    mx = max(np.abs(actual).max(), np.abs(predicted_disp).max()) * 1.1
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=line_x, y=line_x, name="Perfect",
-        line=dict(color=t["border"], dash="dash", width=1),
-        showlegend=False,
+        x=[-mx, mx], y=[-mx, mx], name="Perfect",
+        line=dict(color=t["border"], dash="dash", width=1), showlegend=False,
     ))
     fig.add_trace(go.Scatter(
-        x=predicted, y=actual,
-        mode="markers",
+        x=predicted_disp, y=actual, mode="markers",
         name="OOS Samples",
-        marker=dict(color=colors, size=4, opacity=0.6),
+        marker=dict(color=colors, size=4, opacity=0.55),
         hovertemplate="Pred: %{x:.3f}%<br>Act: %{y:.3f}%<extra></extra>",
     ))
 
-    lay = _plotly_layout(t, "Actual vs Predicted Return (%)", height=350)
+    lay = _plotly_base(t, "Actual vs Predicted Return (%)", height=320)
     lay["xaxis"] = {**lay.get("xaxis", {}), "title": dict(text="Predicted %", font=dict(size=9))}
-    lay["yaxis"] = {**lay.get("yaxis", {}), "title": dict(text="Actual %", font=dict(size=9))}
+    lay["yaxis"] = {**lay.get("yaxis", {}), "title": dict(text="Actual %",    font=dict(size=9))}
     fig.update_layout(**lay)
-
-    # Annotation: directional accuracy
+    dir_acc = result.directional_acc * 100
     fig.add_annotation(
-        text=f"Dir. Acc: {result.directional_acc*100:.1f}%",
-        xref="paper", yref="paper", x=0.05, y=0.95,
+        text=f"Dir. Acc: {dir_acc:.1f}%",
+        xref="paper", yref="paper", x=0.05, y=0.93,
         showarrow=False, font=dict(size=10, color=t["text_sec"]),
         bgcolor=t["card"], bordercolor=t["border"],
     )
     return fig
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  CHART 4: CV fold R² breakdown
+# ─────────────────────────────────────────────────────────────────────────────
 def _chart_cv_folds(result, t: dict) -> go.Figure:
-    """Bar chart of R² across expanding-window CV folds."""
     folds = result.cv_folds
     if not folds:
         fig = go.Figure()
-        fig.update_layout(**_plotly_layout(t, "CV Fold Performance"))
+        fig.update_layout(**_plotly_base(t, "CV Results"))
         return fig
 
-    fold_nums = [f"Fold {f.fold}" for f in folds]
-    r2_vals   = [f.r2_oos * 100 for f in folds]
-    train_n   = [f.train_size for f in folds]
-    colors    = [t["green"] if r > 0 else t["red"] for r in r2_vals]
+    fold_labels = [f"Fold {f.fold}" for f in folds]
+    r2_vals     = [max(f.r2_oos * 100, -200.0) for f in folds]  # cap at -200%
+    colors      = [t["green"] if r > 0 else t["red"] for r in r2_vals]
+    train_n     = [f.train_size for f in folds]
 
-    fig = make_subplots(rows=1, cols=2, subplot_titles=["OOS R² per Fold", "Train Size per Fold"],
-                        column_widths=[0.6, 0.4])
+    fig = make_subplots(rows=1, cols=2,
+                        subplot_titles=["OOS R² per Fold (capped -200%)", "Training Size"],
+                        column_widths=[0.55, 0.45])
 
     fig.add_trace(go.Bar(
-        x=fold_nums, y=r2_vals,
+        x=fold_labels, y=r2_vals,
         marker_color=colors, opacity=0.85, name="R²",
-        hovertemplate="%{x}: %{y:.4f}%<extra></extra>",
+        hovertemplate="%{x}: %{y:.2f}%<extra></extra>",
     ), row=1, col=1)
 
     fig.add_trace(go.Bar(
-        x=fold_nums, y=train_n,
-        marker_color=t["blue"], opacity=0.7, name="Train bars",
+        x=fold_labels, y=train_n,
+        marker_color=t["blue"], opacity=0.7, name="Bars",
         hovertemplate="%{x}: %{y} bars<extra></extra>",
     ), row=1, col=2)
 
-    lay = _plotly_layout(t, "Expanding-Window CV Results", height=310)
+    lay = _plotly_base(t, "Expanding-Window CV Results", height=290)
     lay["yaxis"]  = {**lay.get("yaxis", {}),
                      "title": dict(text="R² %", font=dict(size=9)),
                      "zeroline": True, "zerolinecolor": t["border"]}
@@ -530,86 +618,74 @@ def _chart_cv_folds(result, t: dict) -> go.Figure:
     return fig
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  MULTI-HORIZON (cached only)
+# ─────────────────────────────────────────────────────────────────────────────
 def _render_multi_horizon(result, df: pd.DataFrame, interval: str, t: dict):
-    """Multi-horizon predictions — only uses already-cached models, never trains."""
     from ml.predictor import predict as ml_predict, _horizon_label
 
     horizons = [1, 5, 20]
     cols = st.columns(len(horizons))
+
     for ci, h in enumerate(horizons):
         try:
-            # Reuse the primary result for h=1; show "train to unlock" for others
             cache_key = f"ml_mh_{result.symbol}_{result.model_type}_{h}"
             r_h = st.session_state.get(cache_key)
-            # If not cached, skip (never auto-train here)
             if r_h is None:
-                if h == result.horizon:
-                    r_h = result  # reuse the primary trained model
-                else:
-                    cols[ci].caption(f"H={h}: train to unlock")
-                    continue
+                # Reuse the primary result when horizons match
+                r_h = result if h == result.horizon else None
 
             if r_h is None:
+                cols[ci].markdown(
+                    f'<div style="background:{t["card"]};border:1px solid {t["border"]};'
+                    f'border-radius:6px;padding:12px;text-align:center">'
+                    f'<div style="font-size:9px;color:{t["text_mute"]};letter-spacing:.15em">'
+                    f'{h} BAR{"S" if h>1 else ""}</div>'
+                    f'<div style="font-size:12px;color:{t["text_mute"]};margin-top:6px">Train to unlock</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
                 continue
 
             p_h = ml_predict(r_h, df, interval)
             if p_h is None:
-                cols[ci].caption(f"H={h}: no prediction")
                 continue
 
             ret_pct = p_h.predicted_return * 100
-            sig = p_h.signal
+            sig     = p_h.signal
             sig_col = {"BUY": t["green"], "SELL": t["red"]}.get(sig, t["amber"])
-            hl = _horizon_label(h, interval)
+            hl      = _horizon_label(h, interval)
 
             cols[ci].markdown(f"""
-<div style="background:{t['card']};border:1px solid {sig_col if sig!='HOLD' else t['border']};
+<div style="background:{t['card']};
+     border:1px solid {sig_col if sig != 'HOLD' else t['border']};
      border-radius:6px;padding:12px 14px;text-align:center">
   <div style="font-size:9px;color:{t['text_mute']};letter-spacing:.15em;text-transform:uppercase;margin-bottom:4px">
     {hl}
   </div>
-  <div style="font-size:20px;font-weight:700;color:{sig_col}">{sig}</div>
-  <div style="font-size:14px;font-weight:600;color:{t['text']};margin-top:2px">
-    {ret_pct:+.3f}%
-  </div>
-  <div style="font-size:11px;color:{t['text_sec']};margin-top:4px">
-    Target: ${p_h.predicted_price:,.4f}
-  </div>
-  <div style="font-size:10px;color:{t['text_mute']};margin-top:2px">
-    Conf: {p_h.confidence:.0f}%
-  </div>
-</div>
-""", unsafe_allow_html=True)
+  <div style="font-size:22px;font-weight:700;color:{sig_col}">{sig}</div>
+  <div style="font-size:13px;font-weight:600;color:{t['text']};margin-top:2px">{ret_pct:+.3f}%</div>
+  <div style="font-size:11px;color:{t['text_sec']};margin-top:4px">Target: ${p_h.predicted_price:,.4f}</div>
+  <div style="font-size:10px;color:{t['text_mute']};margin-top:2px">Conf: {p_h.confidence:.0f}%</div>
+</div>""", unsafe_allow_html=True)
+
         except Exception:
-            cols[ci].caption(f"H={h}: computing …")
+            cols[ci].caption(f"H={h}: error")
 
 
-def _fmt_feat_name(key: str) -> str:
-    """Human-readable feature labels."""
-    label_map = {
-        "f_ret_1":      "Return 1-bar",
-        "f_ret_5":      "Return 5-bar",
-        "f_ret_20":     "Momentum 1mo",
-        "f_ret_60":     "Momentum 3mo",
-        "f_ret_120":    "Momentum 6mo",
-        "f_ema_cross":  "EMA Cross",
-        "f_vs_ema_f":   "Price vs EMA Fast",
-        "f_vs_ema_s":   "Price vs EMA Slow",
-        "f_macd_norm":  "MACD (norm)",
-        "f_macd_hist":  "MACD Histogram",
-        "f_rsi_norm":   "RSI (norm)",
-        "f_bb_pct":     "Bollinger %B",
-        "f_stoch":      "Stochastic %K",
-        "f_close_vs_high": "Close vs High20",
-        "f_close_vs_low":  "Close vs Low20",
-        "f_atr_norm":   "ATR / Price",
-        "f_realvol":    "Realised Vol",
-        "f_vol_accel":  "Vol Acceleration",
-        "f_vol_ratio":  "Volume Ratio",
-        "f_obv_mom":    "OBV Momentum",
-        "f_breakout_u": "Breakout Up",
-        "f_breakout_d": "Breakout Down",
-        "f_range_pos":  "Range Position",
-        "f_price_accel":"Price Acceleration",
-    }
-    return label_map.get(key, key.replace("f_", "").replace("_", " ").title())
+# ── Helpers ────────────────────────────────────────────────────────────────────
+def _fmt_feat(key: str) -> str:
+    return {
+        "f_ret_1": "Return 1-bar", "f_ret_5": "Return 5-bar",
+        "f_ret_20": "Momentum 1mo", "f_ret_60": "Momentum 3mo",
+        "f_ret_120": "Momentum 6mo", "f_ema_cross": "EMA Cross",
+        "f_vs_ema_f": "Price vs EMA Fast", "f_vs_ema_s": "Price vs EMA Slow",
+        "f_macd_norm": "MACD (norm)", "f_macd_hist": "MACD Histogram",
+        "f_rsi_norm": "RSI (norm)", "f_bb_pct": "Bollinger %B",
+        "f_stoch": "Stochastic %K", "f_close_vs_high": "Close vs High20",
+        "f_close_vs_low": "Close vs Low20", "f_atr_norm": "ATR / Price",
+        "f_realvol": "Realised Vol", "f_vol_accel": "Vol Acceleration",
+        "f_vol_ratio": "Volume Ratio", "f_obv_mom": "OBV Momentum",
+        "f_breakout_u": "Breakout Up", "f_breakout_d": "Breakout Down",
+        "f_range_pos": "Range Position", "f_price_accel": "Price Acceleration",
+    }.get(key, key.replace("f_", "").replace("_", " ").title())

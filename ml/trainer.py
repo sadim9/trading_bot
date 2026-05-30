@@ -71,6 +71,12 @@ class MLTrainingResult:
     # Sharpe estimate
     sharpe_est:      float          = 0.0
 
+    # Data quality: "good" | "fair" | "poor" | "insufficient"
+    data_quality:    str            = "fair"
+
+    # Which models were actually used (for ensemble)
+    active_models:   List[str]      = field(default_factory=list)
+
     # Per-model breakdown (ensemble only)
     individual_r2:   Dict[str, float] = field(default_factory=dict)
 
@@ -169,7 +175,7 @@ def train(
             f"(train={train_end}, test {train_end}→{test_end}) …"
         )
 
-        m = make_model(model_type)
+        m = make_model(model_type, n_samples=train_end)
         m.fit(X_tr, y_tr)
 
         # For ensemble, use the mean of individual (non-ranked) predictions for
@@ -205,7 +211,7 @@ def train(
     _progress(80, "Fitting final model on full dataset …")
 
     # ── Final fit on ALL data ─────────────────────────────────────────────────
-    final_model = make_model(model_type)
+    final_model = make_model(model_type, n_samples=n)
     final_model.fit(X_arr, y_arr)
 
     _progress(92, "Computing metrics …")
@@ -219,6 +225,17 @@ def train(
 
     feat_imp = final_model.feature_importance(feat_names)
 
+    # ── Data quality assessment ───────────────────────────────────────────────
+    # Classify dataset quality to guide the user
+    if n >= 2000:
+        data_quality = "good"       # Daily 2y+ — ideal
+    elif n >= 600:
+        data_quality = "fair"       # Enough for RF/EN, marginal for NN
+    elif n >= 200:
+        data_quality = "poor"       # ElasticNet/RF only, high noise
+    else:
+        data_quality = "insufficient"
+
     # Individual model R² for ensemble
     individual_r2: Dict[str, float] = {}
     if model_type == "ensemble":
@@ -227,6 +244,8 @@ def train(
             individual_r2[mname] = _r2_oos_vs_zero(oos_act_arr[:len(mpreds)], np.array(mpreds))
 
     _progress(100, "Done ✓")
+
+    _active = getattr(final_model, "active_models", [model_type])
 
     return MLTrainingResult(
         symbol          = symbol,
@@ -241,6 +260,8 @@ def train(
         mae             = mae,
         directional_acc = dir_acc,
         sharpe_est      = sharpe,
+        data_quality    = data_quality,
+        active_models   = _active,
         oos_dates       = all_oos_dates,
         oos_actual      = all_oos_actual,
         oos_predicted   = all_oos_pred,
