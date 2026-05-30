@@ -265,13 +265,14 @@ def render_ml_tab(
         ),
     )
 
-    # ── Row 2: Diagnostic charts — always all three visible ───────────────────
-    diag1, diag2, diag3 = st.columns([1, 1, 1], gap="small")
-    with diag1:
-        st.plotly_chart(
-            _chart_actual_vs_predicted(result, t),
-            use_container_width=True, config=dict(displayModeBar=False),
-        )
+    # ── Row 2: Actual vs Predicted (dedicated full-row for visibility) ───────
+    st.plotly_chart(
+        _chart_actual_vs_predicted(result, t),
+        use_container_width=True, config=dict(displayModeBar=False),
+    )
+
+    # ── Row 3: Feature Importance + CV Folds (side by side) ──────────────────
+    diag2, diag3 = st.columns([1.2, 0.8], gap="small")
     with diag2:
         st.plotly_chart(
             _chart_feature_importance(result, t),
@@ -416,114 +417,137 @@ def _chart_price_with_signals(result, df: pd.DataFrame, t: dict, symbol: str, pr
     """
     if not result.oos_dates or len(result.oos_dates) < 5:
         fig = go.Figure()
-        fig.update_layout(**_plotly_base(t, "Price + ML Signals"))
+        fig.update_layout(**_plotly_base(t, "Price + ML Signals — train a model to see signals"))
         return fig
 
     oos_dates = pd.to_datetime(result.oos_dates)
     oos_pred  = np.array(result.oos_predicted)
     oos_act   = np.array(result.oos_actual)
 
-    # Align df to OOS period
-    df_oos = df.reindex(oos_dates, method="nearest").dropna(subset=["Close"])
+    # Bug 4 fix: use the FULL df for price display (not just OOS period).
+    # The OOS period ends `horizon` bars before the last bar because forward
+    # returns are NaN for the last N rows. Show the full loaded data so the
+    # chart reaches today, then overlay signals on the OOS sub-period.
+    df_full = df.dropna(subset=["Close", "Open", "High", "Low"])
+    df_oos  = df_full.reindex(oos_dates, method="nearest", tolerance="1D").dropna(subset=["Close"])
 
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                        row_heights=[0.70, 0.30], vertical_spacing=0.04)
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True,
+        row_heights=[0.72, 0.28], vertical_spacing=0.02,
+        subplot_titles=["", "Rolling 20-bar Directional Accuracy"],
+    )
+    fig.layout.annotations[0].update(text="")   # clear auto subplot title
 
-    # ── Candlestick / price line ──────────────────────────────────────────────
-    if len(df_oos) > 10:
-        fig.add_trace(go.Candlestick(
-            x=df_oos.index,
-            open=df_oos["Open"], high=df_oos["High"],
-            low=df_oos["Low"],   close=df_oos["Close"],
-            name="Price",
-            increasing_line_color=t["green"], decreasing_line_color=t["red"],
-            increasing_fillcolor="rgba(0,201,167,0.25)" if not light_mode else "rgba(0,115,92,0.20)",
-            decreasing_fillcolor="rgba(255,69,96,0.25)"  if not light_mode else "rgba(192,0,30,0.20)",
-            showlegend=False,
-        ), row=1, col=1)
-    else:
-        fig.add_trace(go.Scatter(
-            x=df_oos.index, y=df_oos["Close"],
-            name="Price", line=dict(color=t["text_sec"], width=1.5),
-        ), row=1, col=1)
+    # ── Full price history (candlestick) ──────────────────────────────────────
+    fig.add_trace(go.Candlestick(
+        x=df_full.index,
+        open=df_full["Open"], high=df_full["High"],
+        low=df_full["Low"],   close=df_full["Close"],
+        name="Price",
+        increasing_line_color=t["green"],
+        decreasing_line_color=t["red"],
+        increasing_fillcolor="rgba(0,201,167,0.22)" if not light_mode else "rgba(0,115,92,0.18)",
+        decreasing_fillcolor="rgba(255,69,96,0.22)"  if not light_mode else "rgba(192,0,30,0.18)",
+        showlegend=True,
+        whiskerwidth=0,
+    ), row=1, col=1)
 
-    # ── BUY / SELL signals from OOS predictions ───────────────────────────────
-    # Threshold: top/bottom 30% of predictions → strong signals only
-    pred_std = float(np.std(oos_pred)) if len(oos_pred) > 5 else 0.003
-    buy_thr  = max(0.002, pred_std * 0.5)
-    sell_thr = -buy_thr
-    buy_idx  = np.where(oos_pred > buy_thr)[0]
-    sell_idx = np.where(oos_pred < sell_thr)[0]
+    # ── Shade the OOS test period ─────────────────────────────────────────────
+    if len(oos_dates) > 1:
+        oos_start = oos_dates[0]
+        oos_end   = oos_dates[-1]
+        fill_col  = "rgba(75,159,255,0.06)" if not light_mode else "rgba(21,85,162,0.05)"
+        fig.add_vrect(
+            x0=oos_start, x1=oos_end,
+            fillcolor=fill_col, line_width=0,
+            annotation_text="← OOS test period →",
+            annotation_position="top left",
+            annotation_font=dict(size=9, color=t["text_mute"]),
+            row=1, col=1,
+        )
+
+    # ── BUY / SELL signals on OOS period ─────────────────────────────────────
+    pred_std = max(float(np.std(oos_pred)), 1e-6) if len(oos_pred) > 5 else 0.003
+    buy_thr  = pred_std * 0.4    # top ~35% of predictions → BUY
+    sell_thr = -pred_std * 0.4   # bottom ~35%             → SELL
 
     n_oos = len(df_oos)
-    if len(buy_idx) and n_oos:
-        buy_valid  = [i for i in buy_idx if i < n_oos]
-        buy_dates  = [oos_dates[i] for i in buy_valid]
-        buy_prices = [float(df_oos["Low"].iloc[i]) * 0.997 for i in buy_valid]
-        if buy_dates:
+    if n_oos > 0:
+        buy_idx  = [i for i in np.where(oos_pred > buy_thr)[0]  if i < n_oos]
+        sell_idx = [i for i in np.where(oos_pred < sell_thr)[0] if i < n_oos]
+
+        if buy_idx:
             fig.add_trace(go.Scatter(
-                x=buy_dates, y=buy_prices, mode="markers", name="ML BUY ▲",
-                marker=dict(symbol="triangle-up", size=14, color=t["green"],
-                            opacity=0.95, line=dict(color=t["bg"], width=1)),
-                hovertemplate="<b>ML BUY</b><br>Date: %{x}<br>Price: %{y:,.2f}<extra></extra>",
+                x=[oos_dates[i] for i in buy_idx],
+                y=[float(df_oos["Low"].iloc[i])  * 0.9965 for i in buy_idx],
+                mode="markers", name="ML BUY",
+                marker=dict(symbol="triangle-up", size=13, color=t["green"],
+                            opacity=1.0, line=dict(color=t["bg"], width=1.5)),
+                hovertemplate="<b>ML BUY Signal</b><br>%{x|%b %d %H:%M}<br>Price: $%{y:,.2f}<extra></extra>",
             ), row=1, col=1)
 
-    if len(sell_idx) and n_oos:
-        sell_valid  = [i for i in sell_idx if i < n_oos]
-        sell_dates  = [oos_dates[i] for i in sell_valid]
-        sell_prices = [float(df_oos["High"].iloc[i]) * 1.003 for i in sell_valid]
-        if sell_dates:
+        if sell_idx:
             fig.add_trace(go.Scatter(
-                x=sell_dates, y=sell_prices, mode="markers", name="ML SELL ▼",
-                marker=dict(symbol="triangle-down", size=14, color=t["red"],
-                            opacity=0.95, line=dict(color=t["bg"], width=1)),
-                hovertemplate="<b>ML SELL</b><br>Date: %{x}<br>Price: %{y:,.2f}<extra></extra>",
+                x=[oos_dates[i] for i in sell_idx],
+                y=[float(df_oos["High"].iloc[i]) * 1.0035 for i in sell_idx],
+                mode="markers", name="ML SELL",
+                marker=dict(symbol="triangle-down", size=13, color=t["red"],
+                            opacity=1.0, line=dict(color=t["bg"], width=1.5)),
+                hovertemplate="<b>ML SELL Signal</b><br>%{x|%b %d %H:%M}<br>Price: $%{y:,.2f}<extra></extra>",
             ), row=1, col=1)
 
-    # ── Current price + ML target ─────────────────────────────────────────────
-    if pred and len(df_oos):
-        last_date = df_oos.index[-1]
-        fig.add_hline(
-            y=pred.current_price, line_color=t["amber"], line_width=1,
-            line_dash="dot", annotation_text=f"Now ${pred.current_price:,.2f}",
-            annotation_font_color=t["amber"], annotation_font_size=9,
-            row=1, col=1,
-        )
+    # ── Current price + ML target lines (at current date) ────────────────────
+    if pred:
         sig_col = {"BUY": t["green"], "SELL": t["red"]}.get(pred.signal, t["text_mute"])
         fig.add_hline(
-            y=pred.predicted_price, line_color=sig_col, line_width=1.5,
-            line_dash="dash",
-            annotation_text=f"ML Target ${pred.predicted_price:,.2f}",
-            annotation_font_color=sig_col, annotation_font_size=9,
-            row=1, col=1,
+            y=pred.current_price, line_color=t["amber"], line_width=1.5,
+            line_dash="dot",
+            annotation_text=f"  Now  ${pred.current_price:,.2f}",
+            annotation_font=dict(size=9, color=t["amber"]),
+            annotation_position="right", row=1, col=1,
         )
+        if pred.signal != "HOLD":
+            fig.add_hline(
+                y=pred.predicted_price, line_color=sig_col, line_width=1.5,
+                line_dash="dash",
+                annotation_text=f"  ML Target  ${pred.predicted_price:,.2f}",
+                annotation_font=dict(size=9, color=sig_col),
+                annotation_position="right", row=1, col=1,
+            )
 
-    # ── Prediction accuracy bar (bottom subplot) ──────────────────────────────
-    correct = (np.sign(oos_act) == np.sign(oos_pred)).astype(float)
-    rolling_acc = pd.Series(correct).rolling(20, min_periods=5).mean() * 100
+    # ── Rolling directional accuracy (bottom panel) ───────────────────────────
+    correct     = (np.sign(oos_act) == np.sign(oos_pred)).astype(float)
+    window      = min(20, max(5, len(correct) // 10))
+    rolling_acc = pd.Series(correct).rolling(window, min_periods=3).mean() * 100
     fig.add_trace(go.Scatter(
-        x=oos_dates, y=rolling_acc, name="20-bar Dir. Acc %",
-        line=dict(color=t["blue"], width=1.5),
+        x=oos_dates, y=rolling_acc,
+        name=f"{window}-bar Dir. Acc",
+        line=dict(color=t["blue"], width=2),
         fill="tozeroy",
-        fillcolor="rgba(21,85,162,0.13)" if light_mode else "rgba(75,159,255,0.13)",
+        fillcolor="rgba(21,85,162,0.12)" if light_mode else "rgba(75,159,255,0.12)",
+        hovertemplate="%{y:.1f}% accuracy<extra></extra>",
     ), row=2, col=1)
-    fig.add_hline(y=50, line_color=t["border"], line_width=1,
-                  line_dash="dot", row=2, col=1)
+    fig.add_hline(y=50, line_color=t["red"], line_width=1,
+                  line_dash="dot", annotation_text="50% (random)",
+                  annotation_font=dict(size=8, color=t["red"]),
+                  annotation_position="right", row=2, col=1)
 
-    lay = _plotly_base(t, f"ML Signals on Price · {symbol} — Drag to zoom · Scroll to pan", height=600)
-    lay["xaxis"]  = {**lay.get("xaxis", {}),
-                     "rangeslider": dict(visible=True, thickness=0.06,
-                                        bgcolor=t["surface"], bordercolor=t["border"]),
-                     "type": "date"}
-    lay["xaxis2"] = dict(gridcolor=t["grid"], showgrid=True, zeroline=False,
+    lay = _plotly_base(t, f"{symbol} · ML Price Signals  (OOS test period shaded)", height=600)
+    lay["xaxis"] = {**lay.get("xaxis", {}),
+                    "rangeslider": dict(visible=True, thickness=0.05,
+                                       bgcolor=t["surface"], bordercolor=t["border"]),
+                    "type": "date",
+                    "tickfont": dict(size=9, color=t["text_mute"])}
+    lay["xaxis2"] = dict(gridcolor=t["grid"], zeroline=False,
                          tickfont=dict(size=9, color=t["text_mute"]))
     lay["yaxis"]  = {**lay.get("yaxis", {}),
-                     "title": dict(text="Price", font=dict(size=9)), "side": "right",
-                     "showgrid": True, "gridcolor": t["grid"]}
+                     "title": dict(text="Price ($)", font=dict(size=9)),
+                     "side": "right", "gridcolor": t["grid"], "showgrid": True}
     lay["yaxis2"] = dict(gridcolor=t["grid"], showgrid=True, zeroline=False,
                          tickfont=dict(size=9, color=t["text_mute"]),
                          title=dict(text="Dir. Acc %", font=dict(size=9)),
                          range=[0, 100], side="right")
+    lay["margin"]      = dict(l=10, r=110, t=50, b=40)   # extra right margin for annotations
     lay["hovermode"]   = "x unified"
     lay["dragmode"]    = "pan"      # default to pan so user can scroll immediately
     lay["legend"]      = dict(orientation="h", yanchor="top", y=1.12, x=0,
@@ -584,44 +608,91 @@ def _chart_feature_importance(result, t: dict) -> go.Figure:
 #  CHART 3: Actual vs Predicted scatter
 # ─────────────────────────────────────────────────────────────────────────────
 def _chart_actual_vs_predicted(result, t: dict) -> go.Figure:
+    """
+    Scatter: predicted return (x) vs actual return (y).
+    Green = model predicted correct direction. Red = wrong direction.
+    The tighter the cloud around the diagonal, the better the model.
+    """
     if not result.oos_actual:
         fig = go.Figure()
-        fig.update_layout(**_plotly_base(t, "Actual vs Predicted"))
+        fig.update_layout(**_plotly_base(t, "Predicted vs Actual Return"))
         return fig
 
-    actual    = np.array(result.oos_actual)   * 100
+    actual    = np.array(result.oos_actual)    * 100
     predicted = np.array(result.oos_predicted) * 100
 
-    # Clip extreme predictions for display clarity
-    p95 = np.percentile(np.abs(predicted), 95)
-    predicted_disp = np.clip(predicted, -p95 * 3, p95 * 3)
+    # Winsorise to 98th percentile for clean display (outliers distort the chart)
+    p98_act  = np.percentile(np.abs(actual),    98)
+    p98_pred = np.percentile(np.abs(predicted), 98)
+    act_disp  = np.clip(actual,    -p98_act  * 1.5, p98_act  * 1.5)
+    pred_disp = np.clip(predicted, -p98_pred * 1.5, p98_pred * 1.5)
 
     correct = (np.sign(actual) == np.sign(predicted))
-    colors  = [t["green"] if c else t["red"] for c in correct]
+    n_correct = int(correct.sum())
+    n_total   = len(correct)
+    dir_acc   = result.directional_acc * 100
 
-    mx = max(np.abs(actual).max(), np.abs(predicted_disp).max()) * 1.1
+    # Build two separate traces for legend clarity
+    mask_ok  = correct
+    mask_err = ~correct
+
+    mx = max(np.abs(act_disp).max(), np.abs(pred_disp).max(), 0.01) * 1.15
+
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=[-mx, mx], y=[-mx, mx], name="Perfect",
-        line=dict(color=t["border"], dash="dash", width=1), showlegend=False,
-    ))
-    fig.add_trace(go.Scatter(
-        x=predicted_disp, y=actual, mode="markers",
-        name="OOS Samples",
-        marker=dict(color=colors, size=4, opacity=0.55),
-        hovertemplate="Pred: %{x:.3f}%<br>Act: %{y:.3f}%<extra></extra>",
-    ))
 
-    lay = _plotly_base(t, "Actual vs Predicted Return (%)", height=400)
-    lay["xaxis"] = {**lay.get("xaxis", {}), "title": dict(text="Predicted %", font=dict(size=9))}
-    lay["yaxis"] = {**lay.get("yaxis", {}), "title": dict(text="Actual %",    font=dict(size=9))}
+    # Perfect prediction diagonal
+    fig.add_trace(go.Scatter(
+        x=[-mx, mx], y=[-mx, mx],
+        mode="lines", name="Perfect prediction",
+        line=dict(color=t["border"], dash="dash", width=1.5),
+        showlegend=False,
+    ))
+    # Zero-axes
+    fig.add_hline(y=0, line_color=t["border"], line_width=0.8, line_dash="dot")
+    fig.add_vline(x=0, line_color=t["border"], line_width=0.8, line_dash="dot")
+
+    # Correct direction (green)
+    if mask_ok.any():
+        fig.add_trace(go.Scatter(
+            x=pred_disp[mask_ok], y=act_disp[mask_ok],
+            mode="markers", name=f"Correct dir. ({n_correct})",
+            marker=dict(color=t["green"], size=5, opacity=0.55,
+                        line=dict(color=t["bg"], width=0.5)),
+            hovertemplate="Pred: %{x:.3f}%<br>Act: %{y:.3f}%<extra>✓ Correct</extra>",
+        ))
+
+    # Wrong direction (red)
+    if mask_err.any():
+        n_err = int(mask_err.sum())
+        fig.add_trace(go.Scatter(
+            x=pred_disp[mask_err], y=act_disp[mask_err],
+            mode="markers", name=f"Wrong dir. ({n_err})",
+            marker=dict(color=t["red"], size=5, opacity=0.45,
+                        line=dict(color=t["bg"], width=0.5)),
+            hovertemplate="Pred: %{x:.3f}%<br>Act: %{y:.3f}%<extra>✗ Wrong</extra>",
+        ))
+
+    lay = _plotly_base(t, "Predicted vs Actual Return  (OOS test period)", height=380)
+    lay["xaxis"] = {**lay.get("xaxis", {}),
+                    "title": dict(text="Predicted Return %", font=dict(size=9)),
+                    "range": [-mx, mx], "zeroline": True, "zerolinecolor": t["border"]}
+    lay["yaxis"] = {**lay.get("yaxis", {}),
+                    "title": dict(text="Actual Return %", font=dict(size=9)),
+                    "range": [-mx, mx], "zeroline": True, "zerolinecolor": t["border"]}
+    lay["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, x=0,
+                         bgcolor="rgba(0,0,0,0)", font=dict(size=9, color=t["text_sec"]))
+    lay["hovermode"] = "closest"
+    lay["margin"] = dict(l=60, r=20, t=50, b=50)
     fig.update_layout(**lay)
-    dir_acc = result.directional_acc * 100
+
+    # Directional accuracy badge
+    badge_col = t["green"] if dir_acc > 52 else (t["amber"] if dir_acc > 48 else t["red"])
     fig.add_annotation(
-        text=f"Dir. Acc: {dir_acc:.1f}%",
-        xref="paper", yref="paper", x=0.05, y=0.93,
-        showarrow=False, font=dict(size=10, color=t["text_sec"]),
-        bgcolor=t["card"], bordercolor=t["border"],
+        text=f"Dir. Acc: {dir_acc:.1f}%  ({n_correct}/{n_total})",
+        xref="paper", yref="paper", x=0.98, y=0.02,
+        xanchor="right", yanchor="bottom",
+        showarrow=False, font=dict(size=11, color=badge_col, family="IBM Plex Mono"),
+        bgcolor=t["card"], bordercolor=badge_col, borderpad=4,
     )
     return fig
 

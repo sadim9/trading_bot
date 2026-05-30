@@ -1357,15 +1357,21 @@ if src == "tradingview":
         _tv_custom_exch.strip().upper() if _tv_custom_exch.strip()
         else (None if _tv_exch_sel == "Auto-detect" else _tv_exch_sel)
     )
-    # Persist whenever the selection changes so it survives refresh/restart
+    # Persist whenever the selection changes.
+    # NOTE: widget key "_tv_exchange_custom" means Streamlit sets
+    # st.session_state["_tv_exchange_custom"] = current_value BEFORE user code
+    # runs, so comparing session_state vs _tv_custom_exch is always equal.
+    # Use a separate "_tv_exchange_custom_saved" key to track what was last
+    # written to disk and compare against that instead.
     _tv_exch_changed = (
         st.session_state.get("_tv_exchange") != _tv_exch_sel
-        or st.session_state.get("_tv_exchange_custom", "") != _tv_custom_exch
+        or st.session_state.get("_tv_exchange_custom_saved", "__unset__") != _tv_custom_exch
         or st.session_state.get("_tv_exchange_override") != _tv_exchange_override
     )
     st.session_state["_tv_exchange"]          = _tv_exch_sel
     st.session_state["_tv_exchange_override"] = _tv_exchange_override
     if _tv_exch_changed:
+        st.session_state["_tv_exchange_custom_saved"] = _tv_custom_exch
         save_settings()
 
 # Hint about BitOasis credentials
@@ -1686,21 +1692,34 @@ with chart_col:
     tab_chart, tab_bt, tab_mkv, tab_ml, tab_log, tab_acct, tab_wl = st.tabs(["CHART", "BACKTEST", "⛓ MARKOV", "🤖 ML", "LOG", "⚙ ACCOUNTS", "📊 WATCHLIST"])
 
     with tab_chart:
-        # Chart controls
-        cc1, cc2, cc3, cc4, cc5 = st.columns([3, 2, 1.5, 1.5, 1])
-        n_can    = cc1.slider("", 30, min(500,len(df)), st.session_state.n_candles, 10, label_visibility="collapsed")
-        st.session_state.n_candles = n_can
-        show_sig = cc2.toggle("Signals on chart", value=True)
-        show_mac = cc3.toggle("MA Cross",  value=True)
-        show_bb  = cc4.toggle("Bol Bands", value=True)
-        st.session_state["show_ma_cross_overlay"] = show_mac
-        _ms = int(st.session_state.get("ma_short",9))
-        _ml = int(st.session_state.get("ma_long",21))
+        # Chart controls — 2-row layout to prevent label overlap
+        _ms = int(st.session_state.get("ma_short", 9))
+        _ml_period = int(st.session_state.get("ma_long", 21))
         try:
             _tz_disp = f"UTC{int(datetime.now().astimezone().utcoffset().total_seconds()/3600):+d}"
         except Exception:
             _tz_disp = "UTC"
-        cc5.markdown(f'<div style="font-size:9px;color:var(--text-mute);padding-top:8px;font-family:var(--mono)">SMA{_ms}/{_ml} · {_tz_disp}</div>', unsafe_allow_html=True)
+
+        _ctrl_left, _ctrl_mid, _ctrl_right = st.columns([4, 4, 2])
+        with _ctrl_left:
+            n_can = st.slider(
+                f"Candles (of {len(df)} loaded)",
+                30, min(500, len(df)), st.session_state.n_candles, 10,
+            )
+            st.session_state.n_candles = n_can
+        with _ctrl_mid:
+            _tog1, _tog2, _tog3 = st.columns(3)
+            show_sig = _tog1.toggle("Signals",   value=True,  key="_chart_signals")
+            show_mac = _tog2.toggle("MA Cross",  value=True,  key="_chart_macross")
+            show_bb  = _tog3.toggle("Bol Bands", value=True,  key="_chart_bb")
+            st.session_state["show_ma_cross_overlay"] = show_mac
+        with _ctrl_right:
+            st.markdown(
+                f'<div style="font-size:9px;color:var(--text-mute);padding-top:6px;'
+                f'font-family:var(--mono);line-height:1.6">'
+                f'SMA {_ms}/{_ml_period}<br>{_tz_disp}</div>',
+                unsafe_allow_html=True,
+            )
 
         if not PLOTLY_OK:
             st.error("pip install plotly")
