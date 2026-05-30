@@ -233,7 +233,7 @@ def render_ml_tab(
     left, right = st.columns([1.1, 0.9], gap="small")
     with left:
         st.plotly_chart(
-            _chart_price_with_signals(result, df, t, symbol, pred),
+            _chart_price_with_signals(result, df, t, symbol, pred, light_mode=light_mode),
             use_container_width=True, config=dict(displayModeBar=False),
         )
     with right:
@@ -379,7 +379,7 @@ def _render_metrics_strip(result, t: dict):
 # ─────────────────────────────────────────────────────────────────────────────
 #  CHART 1: Price chart with ML signal overlay
 # ─────────────────────────────────────────────────────────────────────────────
-def _chart_price_with_signals(result, df: pd.DataFrame, t: dict, symbol: str, pred) -> go.Figure:
+def _chart_price_with_signals(result, df: pd.DataFrame, t: dict, symbol: str, pred, light_mode: bool = False) -> go.Figure:
     """
     Show actual price (candlestick) for the recent OOS period,
     overlaid with ML BUY/SELL signals based on OOS predictions.
@@ -408,7 +408,8 @@ def _chart_price_with_signals(result, df: pd.DataFrame, t: dict, symbol: str, pr
             low=df_oos["Low"],   close=df_oos["Close"],
             name="Price",
             increasing_line_color=t["green"], decreasing_line_color=t["red"],
-            increasing_fillcolor=t["green"]+"44", decreasing_fillcolor=t["red"]+"44",
+            increasing_fillcolor="rgba(0,201,167,0.25)" if not light_mode else "rgba(0,115,92,0.20)",
+            decreasing_fillcolor="rgba(255,69,96,0.25)"  if not light_mode else "rgba(192,0,30,0.20)",
             showlegend=False,
         ), row=1, col=1)
     else:
