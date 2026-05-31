@@ -594,180 +594,180 @@ hr { border-color: var(--border) !important; margin: 6px 0 !important; }
 }
 .qt-toolbar-wrap::-webkit-scrollbar { display: none; }
 
-/* ══════════════════════════════════════
-   MOBILE RESPONSIVE  (≤ 768 px)
-══════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════
+   MOBILE  ≤ 768px  — Professional Terminal Layout
+══════════════════════════════════════════════════════════════ */
 @media (max-width: 768px) {
 
-  /* ── Header ── */
-  .qt-header { padding: 0 12px; height: 44px; }
-  .qt-logo { font-size: 13px; }
-  .qt-header-right > span:not(:first-child) { display: none; }
-
-  /* ── KPI strip — 3 columns instead of 6 ── */
-  .qt-kpi-strip { grid-template-columns: repeat(3, 1fr) !important; gap: 4px !important; padding: 8px 10px !important; }
-  .qt-kpi-value { font-size: 12px !important; }
-  .qt-kpi-label { font-size: 7px !important; }
-
-  /* ── Status bar — single scrollable row ── */
-  .qt-status-bar { gap: 12px; padding: 4px 10px; font-size: 8px; }
-
-  /* ── Ticker tabs — always scroll ── */
-  .qt-ticker-tabs { padding: 0 4px; }
-  .qt-ticker-tab { padding: 5px 10px 3px; min-width: 70px; }
-
-  /* ── Main Streamlit columns — stack vertically ── */
-  [data-testid="column"] { min-width: 100% !important; width: 100% !important; }
-
-  /* ── Tabs bar — scrollable ── */
-  [data-testid="stTabs"] > div:first-child { overflow-x: auto; flex-wrap: nowrap !important; }
-  [data-testid="stTabs"] button { padding: 8px 12px !important; font-size: 10px !important; }
-
-  /* ── Inputs — larger touch targets ── */
-  input, [data-baseweb="select"] > div { min-height: 40px !important; font-size: 14px !important; }
-  [data-testid="baseButton-primary"],
-  [data-testid="baseButton-secondary"] { min-height: 40px !important; font-size: 12px !important; }
-
-  /* ── Signal card text ── */
-  .qt-signal-label { font-size: 20px !important; }
-  .qt-signal-meta  { font-size: 10px !important; }
-
-  /* ── Level rows ── */
-  .qt-level-row { padding: 8px 12px !important; font-size: 12px !important; }
-
-  /* ── Charts full width ── */
-  .js-plotly-plot, .plotly { width: 100% !important; }
-
-  /* ── Dataframe scrollable ── */
-  [data-testid="stDataFrame"] { overflow-x: auto !important; }
-
-  /* ── Expander — always full width ── */
-  [data-testid="stExpander"] { width: 100% !important; }
-}
-
-/* ══════════════════════════════════════
-   EXTRA SMALL  (≤ 480 px)
-══════════════════════════════════════ */
-@media (max-width: 480px) {
-  .qt-kpi-strip { grid-template-columns: repeat(2, 1fr) !important; }
-  .qt-header-right { display: none !important; }
-  .qt-logo { font-size: 12px; }
-  [data-testid="stTabs"] button { padding: 6px 8px !important; font-size: 9px !important; }
-  .qt-ticker-tab { min-width: 60px; padding: 4px 8px 3px; }
-  .qt-ticker-tab-sym { font-size: 10px; }
-}
-
-/* ══════════════════════════════════════
-   ENHANCED MOBILE — Streamlit internals
-══════════════════════════════════════ */
-
-/* Force Streamlit container to use full viewport width on mobile */
-@media (max-width: 768px) {
-  /* Remove all horizontal padding from the main container */
+  /* ── Global: full-width, no overflow ── */
+  html, body, .stApp, section.main, .main {
+    overflow-x: hidden !important;
+    max-width: 100vw !important;
+  }
   .main .block-container {
-    padding-left: 0.5rem !important;
-    padding-right: 0.5rem !important;
-    padding-top: 0.5rem !important;
+    padding: 0.25rem 0.5rem !important;
     max-width: 100vw !important;
   }
 
-  /* Stack Streamlit columns on mobile */
+  /* ── Header ── */
+  .qt-header { padding: 0 10px; height: 40px; }
+  .qt-logo   { font-size: 12px; letter-spacing: 0.12em; }
+  .qt-header-right > span:nth-child(n+2) { display: none; }
+
+  /* ── KPI strip — 2 columns on phone, 3 on small tablet ── */
+  .qt-kpi-strip {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 4px !important;
+    padding: 6px 8px !important;
+  }
+  .qt-kpi-value { font-size: 13px !important; }
+  .qt-kpi-label { font-size: 7px !important; letter-spacing: 0.1em !important; }
+  .qt-kpi-delta { font-size: 8px !important; }
+
+  /* ── Status bar — horizontal scroll, compact ── */
+  .qt-status-bar {
+    gap: 10px; padding: 3px 8px; font-size: 8px;
+    overflow-x: auto; white-space: nowrap;
+  }
+
+  /* ── Pinned ticker tabs — scrollable strip ── */
+  .qt-ticker-tabs { padding: 0 2px; gap: 1px; }
+  .qt-ticker-tab  { padding: 5px 8px 3px; min-width: 64px; }
+  .qt-ticker-tab-sym { font-size: 10px; }
+  .qt-ticker-tab-sig { font-size: 7px; }
+  .qt-ticker-tab-px  { font-size: 8px; }
+
+  /* ── Streamlit column stacking ── */
   [data-testid="stHorizontalBlock"] {
     flex-direction: column !important;
-    gap: 0.25rem !important;
+    gap: 4px !important;
   }
   [data-testid="stHorizontalBlock"] > [data-testid="column"] {
-    width: 100% !important;
-    flex: 1 1 100% !important;
-    min-width: 100% !important;
+    width: 100% !important; flex: 1 1 100% !important; min-width: 100% !important;
   }
 
-  /* Make all buttons full-width on mobile */
-  [data-testid="stFormSubmitButton"] > button,
-  [data-testid="baseButton-primary"],
-  [data-testid="baseButton-secondary"] {
-    width: 100% !important;
-    min-height: 44px !important;
-    font-size: 13px !important;
+  /* ── Toolbar: allow 2-up pairs instead of full stack ── */
+  [data-testid="stHorizontalBlock"].toolbar-row > [data-testid="column"] {
+    min-width: 48% !important; flex: 0 0 48% !important;
+    width: 48% !important;
   }
 
-  /* Sidebar hidden by default on mobile — already collapsed via page config */
-  [data-testid="stSidebar"] { display: none !important; }
-
-  /* Make number inputs and text inputs larger for fat-finger touch */
-  input[type="text"], input[type="password"], input[type="number"], textarea {
-    font-size: 16px !important;  /* prevents iOS Safari auto-zoom on focus */
-    min-height: 44px !important;
-  }
-
-  /* Select boxes */
-  [data-baseweb="select"] { min-height: 44px !important; }
-  [data-baseweb="select"] > div { min-height: 44px !important; }
-
-  /* Tabs — horizontal scroll, don't wrap */
+  /* ── Tabs bar — horizontal scroll, compact, no wrap ── */
   [data-testid="stTabs"] > div:first-child {
     overflow-x: auto !important;
     -webkit-overflow-scrolling: touch !important;
     flex-wrap: nowrap !important;
     scrollbar-width: none !important;
+    border-bottom-width: 1px !important;
   }
   [data-testid="stTabs"] > div:first-child::-webkit-scrollbar { display: none !important; }
-
-  /* Metrics — stack 2 per row instead of 4-6 */
-  [data-testid="metric-container"] {
+  [data-testid="stTabs"] button {
     padding: 8px 10px !important;
-  }
-  [data-testid="metric-container"] [data-testid="metric-value"] {
-    font-size: 14px !important;
+    font-size: 9px !important;
+    white-space: nowrap !important;
+    flex-shrink: 0 !important;
   }
 
-  /* Chart — ensure it fills mobile width */
+  /* ── Touch-friendly inputs ── */
+  input[type="text"], input[type="password"],
+  input[type="number"], textarea {
+    font-size: 16px !important;   /* prevents iOS Safari auto-zoom */
+    min-height: 42px !important;
+  }
+  [data-baseweb="select"],
+  [data-baseweb="select"] > div { min-height: 42px !important; }
+
+  /* ── Buttons — 44px tap target ── */
+  [data-testid="baseButton-primary"],
+  [data-testid="baseButton-secondary"],
+  [data-testid="stFormSubmitButton"] > button {
+    min-height: 44px !important;
+    font-size: 12px !important;
+    width: 100% !important;
+  }
+
+  /* ── Charts ── */
   .js-plotly-plot, .plotly, .plot-container {
     width: 100% !important;
     overflow-x: hidden !important;
   }
+  /* Remove Plotly modebar on mobile — not useful with touch */
+  .modebar-container { display: none !important; }
 
-  /* Block container max width */
-  section.main > div { max-width: 100vw !important; }
+  /* ── Metrics ── */
+  [data-testid="metric-container"] { padding: 7px 10px !important; }
+  [data-testid="metric-container"] [data-testid="metric-value"] { font-size: 14px !important; }
+  [data-testid="metric-container"] label { font-size: 7px !important; }
 
-  /* Form layout — stack columns */
-  [data-testid="stForm"] [data-testid="stHorizontalBlock"] > [data-testid="column"] {
-    min-width: 100% !important;
-  }
+  /* ── Dataframe ── */
+  [data-testid="stDataFrame"] { overflow-x: auto !important; max-width: 100vw !important; }
 
-  /* Expanders */
-  details > summary { font-size: 12px !important; padding: 10px 0 !important; }
+  /* ── Expanders ── */
+  [data-testid="stExpander"] { width: 100% !important; }
+  details > summary { font-size: 11px !important; padding: 10px 0 !important; }
 
-  /* Alert feed cards */
-  .qt-alert { padding: 8px 10px !important; }
-  .qt-alert-title { font-size: 11px !important; }
+  /* ── Signal cards ── */
+  .qt-signal       { padding: 12px 14px !important; }
+  .qt-signal-label { font-size: 18px !important; }
+  .qt-signal-meta  { font-size: 9px !important; }
 
-  /* Mini grid — 1 column on small screens */
+  /* ── Level rows ── */
+  .qt-level-row { padding: 8px 10px !important; font-size: 11px !important; }
+
+  /* ── Alert cards ── */
+  .qt-alert       { padding: 8px 10px !important; }
+  .qt-alert-title { font-size: 10px !important; }
+
+  /* ── Mini grid — 1 col on phone ── */
   .qt-mini-grid { grid-template-columns: 1fr !important; }
 
-  /* Watchlist rows — more readable on mobile */
-  .qt-wl-row { flex-direction: column !important; }
+  /* ── Section headers ── */
+  .qt-section { font-size: 8px !important; padding: 6px 0 !important; }
 
-  /* Score bar labels */
+  /* ── Score bars ── */
   .qt-score-label { font-size: 9px !important; }
 
-  /* Section headers */
-  .qt-section { font-size: 9px !important; padding: 6px 10px !important; }
+  /* ── Panel column — full width under chart ── */
+  .qt-panel { width: 100% !important; }
+
+  /* ── Sidebar hidden ── */
+  [data-testid="stSidebar"] { display: none !important; }
+
+  /* ── Toast ── */
+  [data-testid="stToast"] { font-size: 11px !important; max-width: 90vw !important; }
 }
 
-/* ── Tablet (768–1024px) ── */
+/* ══════════════════════════════════════════════════════════════
+   SMALL PHONE  ≤ 390px
+══════════════════════════════════════════════════════════════ */
+@media (max-width: 390px) {
+  .qt-kpi-strip {
+    grid-template-columns: repeat(2, 1fr) !important;
+    padding: 4px !important;
+    gap: 3px !important;
+  }
+  .qt-header-right { display: none !important; }
+  .qt-logo         { font-size: 11px; }
+  [data-testid="stTabs"] button { padding: 6px 8px !important; font-size: 8px !important; }
+  .qt-ticker-tab   { min-width: 56px; padding: 4px 6px 2px; }
+  .qt-ticker-tab-sym { font-size: 9px; }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   SMALL TABLET  769–1024px
+══════════════════════════════════════════════════════════════ */
 @media (min-width: 769px) and (max-width: 1024px) {
   .main .block-container {
     padding-left: 1rem !important;
     padding-right: 1rem !important;
   }
-  /* 2-up column layout for medium screens */
+  .qt-kpi-strip { grid-template-columns: repeat(3, 1fr) !important; }
   [data-testid="stHorizontalBlock"] > [data-testid="column"] {
     min-width: 45% !important;
   }
 }
 
-/* ── Desktop — preserve existing 3-6 col layouts ── */
+/* ── Desktop — full layouts preserved ── */
 @media (min-width: 1025px) {
   .main .block-container {
     padding-left: 1.5rem !important;
@@ -1251,9 +1251,12 @@ if _n_pinned > 0:
                     st.session_state.period        = _saved.get("period",   st.session_state.period)
                     st.session_state.strategy_mode = _saved.get("strategy_mode", st.session_state.strategy_mode)
                     st.session_state.tz_offset_hours = float(_saved.get("tz_offset_hours", st.session_state.get("tz_offset_hours", 3.0)))
-                    # Restore TV exchange — set session state before widgets render
-                    if "_tv_exchange" in _saved:
-                        st.session_state["_tv_exchange"] = _saved["_tv_exchange"]
+                    # Restore TV exchange — set BOTH the logical key AND the
+                    # widget's own session-state key so the selectbox renders
+                    # the saved exchange without needing a second rerun.
+                    _saved_tv = _saved.get("_tv_exchange", "Auto-detect")
+                    st.session_state["_tv_exchange"]     = _saved_tv
+                    st.session_state["_tv_exchange_sel"] = _saved_tv   # widget key
                     if "_tv_exchange_custom" in _saved:
                         st.session_state["_tv_exchange_custom"] = _saved["_tv_exchange_custom"]
                     if "_tv_exchange_override" in _saved:
@@ -1324,15 +1327,21 @@ with st.container():
     if _active_sym in st.session_state.pinned_tickers:
         _pts = st.session_state.get("pinned_ticker_settings", {})
         _saved_pts = _pts.get(_active_sym, {})
+        # Effective exchange = custom text > dropdown if not Auto-detect > None
+        _pts_tv_sel = st.session_state.get("_tv_exchange_sel",
+                        st.session_state.get("_tv_exchange", "Auto-detect"))
+        _pts_tv_cust = st.session_state.get("_tv_exchange_custom", "")
+        _pts_tv_ov   = (_pts_tv_cust.strip().upper() if _pts_tv_cust.strip()
+                        else (None if _pts_tv_sel == "Auto-detect" else _pts_tv_sel))
         _new_pts = {
             "source":              src,
             "interval":            ivl,
             "period":              per,
             "strategy_mode":       strategy_mode,
             "tz_offset_hours":     float(st.session_state.get("tz_offset_hours", 3.0)),
-            "_tv_exchange":        st.session_state.get("_tv_exchange", "Auto-detect"),
-            "_tv_exchange_custom": st.session_state.get("_tv_exchange_custom", ""),
-            "_tv_exchange_override": st.session_state.get("_tv_exchange_override"),
+            "_tv_exchange":        _pts_tv_sel,
+            "_tv_exchange_custom": _pts_tv_cust,
+            "_tv_exchange_override": _pts_tv_ov,
         }
         if _saved_pts != _new_pts:
             _pts[_active_sym] = _new_pts
@@ -1350,15 +1359,20 @@ with st.container():
             st.session_state.pinned_tickers = st.session_state.pinned_tickers + [_new_sym]
             # Save full toolbar settings for this pin so they restore on click
             _pin_settings = st.session_state.get("pinned_ticker_settings", {})
+            _pin_tv_sel  = st.session_state.get("_tv_exchange_sel",
+                             st.session_state.get("_tv_exchange", "Auto-detect"))
+            _pin_tv_cust = st.session_state.get("_tv_exchange_custom", "")
+            _pin_tv_ov   = (_pin_tv_cust.strip().upper() if _pin_tv_cust.strip()
+                            else (None if _pin_tv_sel == "Auto-detect" else _pin_tv_sel))
             _pin_settings[_new_sym] = {
                 "source":              src,
                 "interval":            ivl,
                 "period":              per,
                 "strategy_mode":       strategy_mode,
                 "tz_offset_hours":     float(st.session_state.get("tz_offset_hours", 3.0)),
-                "_tv_exchange":        st.session_state.get("_tv_exchange", "Auto-detect"),
-                "_tv_exchange_custom": st.session_state.get("_tv_exchange_custom", ""),
-                "_tv_exchange_override": st.session_state.get("_tv_exchange_override"),
+                "_tv_exchange":        _pin_tv_sel,
+                "_tv_exchange_custom": _pin_tv_cust,
+                "_tv_exchange_override": _pin_tv_ov,
             }
             st.session_state["pinned_ticker_settings"] = _pin_settings
             save_settings()
@@ -1475,13 +1489,22 @@ if need_load:
     st.session_state.symbol = sym; st.session_state.interval = ivl
     st.session_state.period = per; st.session_state.source   = src
     st.session_state["_last_strategy_mode"] = strategy_mode
-    is_manual = load_btn or sym != st.session_state.get("_last_sym") or ivl != st.session_state.get("_last_ivl")
-    # ALWAYS clear ALL caches so yfinance never returns stale data from
-    # its module-level dict. This is the root cause of "DATA 3h OLD".
-    _DATA_CACHE.clear()
-    clear_cache()
-    clear_ingestion_cache()
-    clear_commodity_cache()
+    # Detect parameter changes (symbol / source / interval / period)
+    _params_changed = (
+        sym != st.session_state.get("_last_sym")
+        or src != st.session_state.get("_last_src")
+        or ivl != st.session_state.get("_last_ivl")
+        or per != st.session_state.get("_last_per")
+    )
+    is_manual = load_btn or _params_changed
+    # Only purge caches on explicit LOAD button, CLEAR CACHE button, or genuine
+    # parameter change.  Auto-refresh and tab-switch (df=None) use the TTL cache
+    # so repeated refreshes don't hammer the network on every rerun.
+    if load_btn or clear_btn or _params_changed:
+        _DATA_CACHE.clear()
+        clear_cache()
+        clear_ingestion_cache()
+        clear_commodity_cache()
     # Always request at least 1000 bars for Binance so indicator warmup
     # never drops all rows (EMA/RSI/BB each need ≥20 bars to initialise)
     # Derive candle count from the selected period + interval so the chart
@@ -1500,7 +1523,10 @@ if need_load:
         lim = max(_period_lim, 500)
     with st.spinner(""):
         df, warn = _load(sym, ivl, per, src, force=is_manual, crypto_limit=lim)
-    st.session_state["_last_sym"] = sym; st.session_state["_last_ivl"] = ivl
+    st.session_state["_last_sym"] = sym
+    st.session_state["_last_ivl"] = ivl
+    st.session_state["_last_src"] = src
+    st.session_state["_last_per"] = per
     if warn: st.warning(warn)
     # Issue helpful guidance for intraday US stocks with no data
     if df is None or (df is not None and len(df) < 5):
@@ -1726,7 +1752,7 @@ st.markdown(f"""
   <span>FETCHED {_fetch_t} ({_age_s})</span>
   <span>LOCAL {_local_now().strftime("%H:%M:%S")} {_tz_str}</span>
   <span>{len(df)} BARS · {ivl}</span>
-  <span>{sym} · {src.upper()}{f" · {st.session_state.get('_tv_exchange','AUTO')}" if src == "tradingview" else ""}</span>
+  <span>{sym} · {src.upper()}{f" · {(st.session_state.get('_tv_exchange_override') or st.session_state.get('_tv_exchange') or 'AUTO').upper()}" if src == "tradingview" else ""}</span>
   {f'<span style="color:var(--red)">DATA {_data_age_hrs:.0f}h OLD — click ⟳ LOAD</span>' if _data_stale else ""}
 </div>
 """, unsafe_allow_html=True)

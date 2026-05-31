@@ -26,8 +26,11 @@ _MODEL_DIR = Path(os.getenv("SETTINGS_DIR", "/app/logs"))
 
 
 def _model_path(symbol: str, model_type: str, horizon: int) -> Path:
-    safe = symbol.replace("/", "_").replace(":", "_")
-    return _MODEL_DIR / f"ml_model_{safe}_{model_type}_h{horizon}.pkl"
+    # Sanitise symbol: keep only alphanumeric, dash, underscore — prevent path traversal
+    import re
+    safe = re.sub(r"[^A-Za-z0-9_\-]", "_", symbol)[:32]
+    safe_type = re.sub(r"[^A-Za-z0-9_]", "_", model_type)[:24]
+    return _MODEL_DIR / f"ml_model_{safe}_{safe_type}_h{int(horizon)}.pkl"
 
 
 def _save_model(result, symbol: str, model_type: str, horizon: int):
@@ -1101,7 +1104,7 @@ def _fmt_feat(key: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  5-MINUTE PREDICTION ENGINE
+#  INTRADAY (5-MIN) PREDICTION ENGINE  — complete rewrite
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _build_hf_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -1147,244 +1150,516 @@ def _build_hf_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _render_5min_section(df: pd.DataFrame, symbol: str, interval: str, t: dict, light_mode: bool):
-    """Render the 5-minute high-frequency prediction section."""
+    """
+    Intraday (5-min / 15-min / 30-min) ML Prediction Engine.
+
+    Works with any intraday-loaded DataFrame.  Trains a Random Forest on HF
+    features, then shows:
+      1. Training / OOS quality metrics
+      2. Live trade recommendation card with entry / SL / TP
+      3. Predicted-price chart: last 100 bars actual + next N bars forecast
+      4. OOS backtest equity curve (after transaction costs)
+      5. Feature importance bar chart
+    """
     sess = st.session_state
 
     st.markdown(
-        '<div class="qt-section">⚡ 5-MINUTE HIGH-FREQUENCY PREDICTION ENGINE</div>',
+        '<div class="qt-section">⚡ INTRADAY PREDICTION ENGINE — 5/15/30-MIN</div>',
         unsafe_allow_html=True,
     )
 
-    with st.expander("ℹ️ About 5-Minute Prediction", expanded=False):
-        st.markdown("""
-**Important context for 5-minute ML trading:**
-
-| | Monthly (Paper) | 5-Minute (This section) |
-|---|---|---|
-| Signal-to-noise | Low but manageable | Extremely low |
-| Best model | Feed-forward NN | Short-term momentum + reversal |
-| Key signals | Fundamentals + momentum | Price position in range, volume surge |
-| Annual cost drag | ~1.2% | **~720%** at 10 trades/day |
-| Realistic Sharpe | 0.8–1.2 | 0.3–0.8 (if done well) |
-
-⚠️ **Transaction costs dominate at 5-minute frequency.** Each round-trip trade costs ~0.04%.
-At 10 trades/day × 252 days = ~$720 cost per $1,000 traded. Your strategy must generate
-extraordinary gross returns just to break even.
-
-💡 **Recommended:** Use this section to identify intraday momentum and range signals,
-but only trade when the predicted return **clearly exceeds the cost hurdle** shown below.
-""")
-
-    # ── Only useful for intraday data ─────────────────────────────────────────
-    _is_intraday = interval in ("1m", "5m", "15m", "30m")
+    # ── Guard: only useful with intraday data ─────────────────────────────────
+    _is_intraday = interval in ("1m", "5m", "15m", "30m", "1h")
     if not _is_intraday:
         st.info(
-            "ℹ️ **5-min section requires intraday data.** "
-            "Switch interval to **5m** or **15m** and reload data to use this section. "
-            "Daily data is better suited for the main ML engine above.",
+            "ℹ️ **Intraday Prediction requires intraday data.** "
+            "Switch interval to **5m**, **15m**, or **30m** and click **⟳ LOAD** first, "
+            "then return here to train the intraday model.",
             icon="📊",
         )
         return
 
-    if df is None or len(df) < 100:
-        st.warning("⚠️ Need at least 100 intraday bars. Load more data (30d period on 5m interval).")
+    if df is None or len(df) < 80:
+        st.warning(
+            "⚠️ Need at least **80 intraday bars**. "
+            "Set period to **30d** on a **5m** or **15m** interval and reload."
+        )
         return
 
     n_bars = len(df)
 
-    # ── Cost model ───────────────────────────────────────────────────────────
-    _spread_bps     = 2.0
-    _commission_bps = 0.5
-    _impact_bps     = 1.0
-    _slippage_bps   = 0.5
-    _total_cost_pct = (_spread_bps + _commission_bps + _impact_bps + _slippage_bps) / 10000
-    _hurdle_pct     = _total_cost_pct * 2 * 100  # 2× safety buffer
+    # ── Cost model ────────────────────────────────────────────────────────────
+    # Separate costs for crypto vs equities/FX
+    _sym_upper = symbol.upper()
+    _is_crypto = any(x in _sym_upper for x in ("BTC","ETH","SOL","XRP","BNB","USDT","ADA","XAU"))
+    _spread_bps     = 1.5 if _is_crypto else 2.5
+    _commission_bps = 0.5 if _is_crypto else 1.0
+    _total_cost_pct = (_spread_bps + _commission_bps) / 10000
+    _hurdle_pct     = _total_cost_pct * 2.5 * 100   # 2.5× safety buffer
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Cost per Trade",   f"{_total_cost_pct*100:.3f}%",   "round-trip")
-    c2.metric("Profit Hurdle",    f"{_hurdle_pct:.3f}%",           "2× cost buffer")
-    c3.metric("Bars Loaded",      f"{n_bars}")
-    _trades_day = 390 // int(interval.replace("m", "")) if interval.endswith("m") else 1
-    _annual_drag = _total_cost_pct * _trades_day * 252 * 100
-    c4.metric("Annual Cost Drag", f"{_annual_drag:.0f}%",          f"if {_trades_day} trades/day")
+    # Bars per trading day for this interval
+    _min_per_bar   = int(interval.replace("m", "").replace("h", "60")) if interval[-1] in "mh" else 60
+    _bars_per_day  = max(1, int(390 / _min_per_bar))   # ~390 min US session
 
-    # ── 5-min model config + train ────────────────────────────────────────────
-    _5m_cache_key = f"ml5m_result_{symbol}"
+    # ── Session cache ─────────────────────────────────────────────────────────
+    _5m_cache_key = f"ml5m_{symbol}_{interval}"
     _5m_result    = sess.get(_5m_cache_key)
-
-    # Try loading from disk
     if _5m_result is None:
-        _5m_result = _load_model(symbol, "hf_rf", 1)
+        _5m_result = _load_model(symbol, f"hf_{interval}", 1)
         if _5m_result is not None:
             sess[_5m_cache_key] = _5m_result
 
-    with st.form("ml5m_config_form", clear_on_submit=False):
-        _fc1, _fc2, _fc3 = st.columns([2, 2, 1])
-        _5m_n_cv  = _fc1.selectbox("CV Folds", [3, 5], index=0, key="ml5m_cv")
-        _5m_h     = _fc2.selectbox(
-            "Predict ahead", [1, 3, 6, 12], index=0,
-            format_func=lambda x: f"{x} bar{'s' if x>1 else ''} ({x * int(interval.replace('m','')) if interval.endswith('m') else x} min)",
-            key="ml5m_horizon",
+    # ── Config form (no per-widget rerun) ─────────────────────────────────────
+    _h_opts    = [1, 2, 3, 6, 12]
+    _h_default = sess.get(f"_ml5m_h_{symbol}", 1)
+    _h_default = _h_default if _h_default in _h_opts else 1
+
+    with st.form(f"ml5m_form_{symbol}", clear_on_submit=False):
+        _fa, _fb, _fc = st.columns([2.5, 2.5, 1])
+        _h5 = _fa.selectbox(
+            "Predict ahead (bars)",
+            _h_opts,
+            index=_h_opts.index(_h_default),
+            format_func=lambda x: f"{x} bar{'s' if x>1 else ''} ≈ {x * _min_per_bar} min",
         )
-        _train5m_btn = _fc3.form_submit_button("⚡ TRAIN HF", type="primary", use_container_width=True)
+        _n_fut = _fb.selectbox(
+            "Forecast bars (chart)",
+            [10, 20, 30],
+            index=1,
+            format_func=lambda x: f"Next {x} bars",
+        )
+        _train5 = _fc.form_submit_button("⚡ TRAIN", type="primary", use_container_width=True)
 
-    if _train5m_btn:
-        _prog5 = st.progress(0, text="Building HF features …")
+    if _train5:
+        sess[f"_ml5m_h_{symbol}"] = _h5
+        _prog5 = st.progress(0, "Building features …")
         try:
-            from sklearn.ensemble import RandomForestRegressor
-            from sklearn.preprocessing import StandardScaler
+            from sklearn.ensemble import GradientBoostingRegressor
+            from sklearn.preprocessing import RobustScaler
 
-            _feat = _build_hf_features(df)
-            if len(_feat) < 60:
-                st.error("Not enough clean HF features — need more data.")
-                _prog5.empty()
-                return
+            _feat5 = _build_hf_features(df)
+            if len(_feat5) < 60:
+                st.error("Not enough clean feature rows — load more intraday data.")
+                _prog5.empty(); return
 
-            _closes = (df["close"] if "close" in df.columns else df["Close"]).reindex(_feat.index)
-            _y_arr  = _closes.pct_change(_5m_h).shift(-_5m_h).reindex(_feat.index).dropna()
-            _X_feat = _feat.reindex(_y_arr.index)
+            _closes5 = (df["Close"] if "Close" in df.columns else df["close"]).reindex(_feat5.index)
+            _y5 = _closes5.pct_change(_h5).shift(-_h5).reindex(_feat5.index).dropna()
+            _X5 = _feat5.reindex(_y5.index)
 
-            _prog5.progress(0.25, text="Fitting Random Forest …")
-            _n = len(_y_arr)
-            _split = int(_n * 0.75)
-            _X_tr, _y_tr = _X_feat.iloc[:_split].values, _y_arr.values[:_split]
-            _X_te, _y_te = _X_feat.iloc[_split:].values, _y_arr.values[_split:]
+            _n5    = len(_y5)
+            _split = int(_n5 * 0.75)
+            if _split < 30:
+                st.error("Need more bars — split produces < 30 training samples."); _prog5.empty(); return
 
-            _scaler = StandardScaler()
-            _X_tr_s = _scaler.fit_transform(_X_tr)
-            _X_te_s = _scaler.transform(_X_te)
+            _X_tr5 = _X5.iloc[:_split].values.astype(np.float32)
+            _y_tr5 = _y5.values[:_split].astype(np.float32)
+            _X_te5 = _X5.iloc[_split:].values.astype(np.float32)
+            _y_te5 = _y5.values[_split:].astype(np.float32)
 
-            _rf = RandomForestRegressor(
-                n_estimators=80, max_depth=6, min_samples_leaf=5,
-                n_jobs=-1, random_state=42,
+            _prog5.progress(0.20, "Scaling features …")
+            _sc5 = RobustScaler()
+            _X_tr5s = _sc5.fit_transform(_X_tr5)
+            _X_te5s = _sc5.transform(_X_te5)
+
+            _prog5.progress(0.40, "Training GradientBoosting …")
+            # Gradient Boosting: better calibrated probabilities than RF for small datasets
+            _mdl5 = GradientBoostingRegressor(
+                n_estimators=120, max_depth=3, learning_rate=0.05,
+                subsample=0.8, random_state=42,
             )
-            _rf.fit(_X_tr_s, _y_tr)
+            _mdl5.fit(_X_tr5s, _y_tr5)
 
-            _prog5.progress(0.75, text="Evaluating OOS …")
-            _y_pred_te = _rf.predict(_X_te_s)
-            _dir_acc   = float((np.sign(_y_te) == np.sign(_y_pred_te)).mean())
+            _prog5.progress(0.75, "Evaluating OOS …")
+            _yp5     = _mdl5.predict(_X_te5s).astype(np.float32)
+            _dir_acc = float((np.sign(_y_te5) == np.sign(_yp5)).mean())
 
-            # Sharpe estimate
-            _pnl = np.where(_y_pred_te > 0, _y_te, -_y_te) - _total_cost_pct
-            _sharpe = float(_pnl.mean() / (_pnl.std() + 1e-9) * np.sqrt(_trades_day * 252))
+            # Net P&L per trade (long when pred>0, short when pred<0), minus costs
+            _pnl5    = np.where(_yp5 > _total_cost_pct, _y_te5,
+                       np.where(_yp5 < -_total_cost_pct, -_y_te5, 0.0)) - _total_cost_pct
+            _sharpe5 = float(_pnl5.mean() / (_pnl5.std() + 1e-9) * np.sqrt(_bars_per_day * 252))
+
+            # OOS actual close prices (for the price chart)
+            _oos_close_prices = _closes5.iloc[_split:].reindex(_y5.index[_split:]).values.tolist()
 
             _5m_result = {
-                "model":     _rf,
-                "scaler":    _scaler,
-                "features":  _feat.columns.tolist(),
-                "horizon":   _5m_h,
-                "interval":  interval,
-                "dir_acc":   _dir_acc,
-                "sharpe":    _sharpe,
-                "oos_pred":  _y_pred_te.tolist(),
-                "oos_act":   _y_te.tolist(),
-                "oos_dates": _y_arr.index[_split:].tolist(),
-                "feat_imp":  dict(zip(_feat.columns, _rf.feature_importances_)),
-                "symbol":    symbol,
-                "n_bars":    _n,
+                "model":       _mdl5,
+                "scaler":      _sc5,
+                "features":    _feat5.columns.tolist(),
+                "horizon":     _h5,
+                "interval":    interval,
+                "dir_acc":     _dir_acc,
+                "sharpe":      _sharpe5,
+                "oos_pred":    _yp5.tolist(),
+                "oos_act":     _y_te5.tolist(),
+                "oos_dates":   _y5.index[_split:].tolist(),
+                "oos_closes":  _oos_close_prices,
+                "train_dates": _y5.index[:_split].tolist(),
+                "feat_imp":    dict(zip(_feat5.columns, _mdl5.feature_importances_)),
+                "symbol":      symbol,
+                "n_bars":      _n5,
+                "cost_pct":    _total_cost_pct,
+                "hurdle_pct":  _hurdle_pct / 100,
             }
             sess[_5m_cache_key] = _5m_result
-            _save_model(_5m_result, symbol, "hf_rf", _5m_h)
+            _save_model(_5m_result, symbol, f"hf_{interval}", _h5)
 
-            _prog5.progress(1.0, text="HF model trained ✓")
-            _prog5.empty()
+            _prog5.progress(1.0, "Done ✓"); _prog5.empty()
             st.toast(
-                f"⚡ HF model trained — Dir. Acc: {_dir_acc*100:.1f}% · Est. Sharpe: {_sharpe:.2f}",
+                f"⚡ Intraday model trained — "
+                f"Dir Acc: {_dir_acc*100:.1f}% · Sharpe: {_sharpe5:.2f}",
                 icon="⚡",
             )
-        except Exception as _e5m:
+        except Exception as _e5:
             _prog5.empty()
-            st.error(f"HF training failed: {_e5m}")
+            st.error(f"Training failed: {_e5}")
+            import traceback; st.code(traceback.format_exc(), language="python")
             return
 
     if _5m_result is None:
         st.info(
-            f"No 5-min HF model for **{symbol}** yet. "
-            "Load intraday data (5m/15m interval, 30d period), then click **⚡ TRAIN HF**."
+            f"No intraday model for **{symbol} ({interval})** yet. "
+            "Click **⚡ TRAIN** above to build one."
         )
         return
 
-    # ── HF Metrics ───────────────────────────────────────────────────────────
-    _dir_acc   = _5m_result.get("dir_acc", 0)
-    _sharpe_hf = _5m_result.get("sharpe", 0)
-    _oos_pred  = np.array(_5m_result.get("oos_pred", []))
-    _oos_act   = np.array(_5m_result.get("oos_act",  []))
-    _oos_dates = _5m_result.get("oos_dates", [])
+    # ─────────────────────────────────────────────────────────────────────────
+    #  LIVE PREDICTION + RECOMMENDATION CARD
+    # ─────────────────────────────────────────────────────────────────────────
+    _close_last = float((df["Close"] if "Close" in df.columns else df["close"]).iloc[-1])
+    _atr_last   = float(df["atr"].iloc[-1]) if "atr" in df.columns else _close_last * 0.005
 
-    _m1, _m2, _m3, _m4 = st.columns(4)
-    _dir_col = t["green"] if _dir_acc > 0.52 else (t["amber"] if _dir_acc > 0.48 else t["red"])
-    _sh_col  = t["green"] if _sharpe_hf > 0 else t["red"]
-    _m1.metric("Dir. Accuracy", f"{_dir_acc*100:.1f}%", "above 52% = edge")
-    _m2.metric("Est. Sharpe",   f"{_sharpe_hf:.2f}",    "after costs")
-    _m3.metric("HF Bars Trained", f"{_5m_result.get('n_bars', 0)}")
-    # Current prediction
+    _pred_ret    = None
+    _feat_live   = None
     try:
-        _feat_now = _build_hf_features(df)
-        if len(_feat_now) > 0:
-            _X_now = _5m_result["scaler"].transform(_feat_now.iloc[[-1]][_5m_result["features"]].values)
-            _ret_now = float(_5m_result["model"].predict(_X_now)[0])
-            _close_now = float((df["close"] if "close" in df.columns else df["Close"]).iloc[-1])
-            _price_tgt = _close_now * (1 + _ret_now)
-            _sig_now = "BUY" if _ret_now > _total_cost_pct * 2 else ("SELL" if _ret_now < -_total_cost_pct * 2 else "HOLD")
-            _m4.metric("HF Signal",     _sig_now, f"{_ret_now*100:+.3f}%")
-            _sig_col5 = {"BUY": t["green"], "SELL": t["red"]}.get(_sig_now, t["amber"])
-            st.markdown(f"""
-<div style="background:{_sig_col5}18;border:1px solid {_sig_col5}44;border-radius:5px;
-  padding:10px 14px;font-family:IBM Plex Mono;font-size:11px;margin:8px 0">
-  <b style="color:{_sig_col5}">{_sig_now}</b> &nbsp;·&nbsp;
-  Predicted {_ret_now*100:+.3f}% over next {_5m_h} bar(s) &nbsp;·&nbsp;
-  Target: ${_price_tgt:,.4f} &nbsp;·&nbsp;
-  Cost hurdle: {_hurdle_pct:.3f}%
-  {"&nbsp;·&nbsp;<b style='color:"+t['green']+"'>✓ Clears cost hurdle</b>" if abs(_ret_now)*100 > _hurdle_pct else "&nbsp;·&nbsp;<b style='color:"+t['red']+"'>✗ Below cost hurdle — no trade</b>"}
-</div>""", unsafe_allow_html=True)
+        _feat_live = _build_hf_features(df)
+        if len(_feat_live) > 0:
+            _feats_needed = _5m_result["features"]
+            _feat_row = _feat_live.iloc[[-1]][_feats_needed].values.astype(np.float32)
+            _feat_row = _5m_result["scaler"].transform(_feat_row)
+            _pred_ret = float(_5m_result["model"].predict(_feat_row)[0])
     except Exception:
-        _m4.metric("HF Signal", "?")
+        pass
 
-    # ── OOS Performance Chart ─────────────────────────────────────────────────
-    if len(_oos_pred) > 5 and len(_oos_act) > 5 and PLOTLY_OK:
+    if _pred_ret is not None:
+        _horizon   = _5m_result.get("horizon", 1)
+        _cost_pct  = _5m_result.get("cost_pct", _total_cost_pct)
+        _hurdle    = _5m_result.get("hurdle_pct", _hurdle_pct / 100)
+        _pred_px   = _close_last * (1 + _pred_ret)
+        _clears    = abs(_pred_ret) > _hurdle
+
+        if _pred_ret > _hurdle:
+            _sig5, _sig_icon5 = "BUY",  "▲"
+            _sl5 = _close_last - _atr_last * 1.5
+            _tp5 = _close_last + _atr_last * 2.5
+        elif _pred_ret < -_hurdle:
+            _sig5, _sig_icon5 = "SELL", "▼"
+            _sl5 = _close_last + _atr_last * 1.5
+            _tp5 = _close_last - _atr_last * 2.5
+        else:
+            _sig5, _sig_icon5 = "HOLD", "◼"
+            _sl5 = _close_last - _atr_last * 1.5
+            _tp5 = _close_last + _atr_last * 1.5
+
+        _rr5      = abs(_tp5 - _close_last) / max(abs(_sl5 - _close_last), 1e-9)
+        _sig_col5 = {"BUY": t["green"], "SELL": t["red"]}.get(_sig5, t["amber"])
+        _bg_cls5  = {"BUY": "qt-signal-buy", "SELL": "qt-signal-sell"}.get(_sig5, "qt-signal-hold")
+        _dir_acc5 = _5m_result.get("dir_acc", 0.5)
+        _conf5    = min(95, max(30, _dir_acc5 * 100 + (20 if _clears else -10)))
+        _conf_col = t["green"] if _conf5 >= 60 else (t["amber"] if _conf5 >= 45 else t["red"])
+        _h_lbl    = f"{_horizon} bar{'s' if _horizon>1 else ''} ≈ {_horizon * _min_per_bar} min"
+
+        st.markdown(f"""
+<div class="qt-signal {_bg_cls5}" style="margin-bottom:12px">
+  <div class="qt-signal-label" style="color:{_sig_col5}">
+    <span class="qt-pulse" style="background:{_sig_col5}"></span>
+    {_sig_icon5} {_sig5} &nbsp;
+    <span style="font-size:20px;color:{_sig_col5}">{_pred_ret*100:+.3f}%</span>
+    <span style="font-size:11px;color:{t['text_sec']};font-weight:400">
+      &nbsp;· next {_h_lbl}
+    </span>
+  </div>
+  <div style="margin-top:10px;display:flex;gap:16px;flex-wrap:wrap;
+       font-family:IBM Plex Mono;font-size:11px;color:{t['text_sec']}">
+    <span>NOW <b style="color:{t['text']}">${_close_last:,.4f}</b></span>
+    <span>TARGET <b style="color:{_sig_col5}">${_pred_px:,.4f}</b></span>
+    <span>SL <b style="color:{t['red']}">${_sl5:,.4f}</b></span>
+    <span>TP <b style="color:{t['green']}">${_tp5:,.4f}</b></span>
+    <span>R/R <b style="color:{t['blue']}">{_rr5:.1f}×</b></span>
+    <span>CONF <b style="color:{_conf_col}">{_conf5:.0f}%</b></span>
+    <span>DIR ACC <b style="color:{t['text']}">{_dir_acc5*100:.1f}%</b></span>
+  </div>
+  <div style="margin-top:8px;font-family:IBM Plex Mono;font-size:10px;
+       color:{_sig_col5 if _clears else t['text_mute']}">
+    {"✓ Signal clears cost hurdle (" + f"{abs(_pred_ret)*100:.3f}% > {_hurdle*100:.3f}%)" if _clears
+      else "⚠ Signal below cost hurdle — HOLD / no trade recommended"}
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+        # Quick metrics strip
+        _qa, _qb, _qc, _qd = st.columns(4)
+        _qa.metric("Signal",        _sig5,               f"{_pred_ret*100:+.3f}%")
+        _qb.metric("Dir. Accuracy", f"{_dir_acc5*100:.1f}%", "OOS backtest")
+        _qc.metric("Est. Sharpe",   f"{_5m_result.get('sharpe',0):.2f}", "after costs")
+        _qd.metric("Bars Trained",  f"{_5m_result.get('n_bars',0)}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    #  PREDICTED PRICE CHART — last N actual bars + forecast
+    # ─────────────────────────────────────────────────────────────────────────
+    if PLOTLY_OK:
         try:
-            _oos_dt = pd.to_datetime(_oos_dates)
-            _pnl_arr = np.where(_oos_pred > _total_cost_pct, _oos_act,
-                        np.where(_oos_pred < -_total_cost_pct, -_oos_act, 0)) - _total_cost_pct
-            _cum_pnl = np.cumsum(_pnl_arr) * 100
+            from plotly.subplots import make_subplots as _msp
 
-            _fig5 = go.Figure()
-            _fig5.add_trace(go.Scatter(
-                x=_oos_dt, y=_cum_pnl, name="Cumulative P&L (after costs)",
-                line=dict(color=t["blue"], width=2),
-                fill="tozeroy",
-                fillcolor=f"rgba(75,159,255,0.08)" if not light_mode else "rgba(21,85,162,0.06)",
-            ))
-            _fig5.add_hline(y=0, line_color=t["border"], line_width=1)
-            _lay5 = _plotly_base(t, "HF Model OOS Cumulative P&L (after costs, after hurdle)", height=280)
-            _lay5["yaxis"] = {**_lay5.get("yaxis", {}), "title": dict(text="Cum. P&L %", font=dict(size=9)), "side": "right"}
-            _fig5.update_layout(**_lay5)
-            st.plotly_chart(_fig5, use_container_width=True, config=dict(displayModeBar=False))
+            _closes_col = "Close" if "Close" in df.columns else "close"
+            _cl_series  = df[_closes_col]
+            _n_hist     = min(120, len(_cl_series))
+            _hist_df    = df.iloc[-_n_hist:]
+            _hist_dates = _hist_df.index
+            _hist_cl    = _hist_df[_closes_col].values
 
-            # Feature importance
-            _feat_imp5 = _5m_result.get("feat_imp", {})
-            if _feat_imp5:
-                _sorted5 = sorted(_feat_imp5.items(), key=lambda x: x[1], reverse=True)[:12]
-                _f_labels = [k.replace("_", " ").title() for k, _ in _sorted5]
-                _f_vals   = [v for _, v in _sorted5]
-                _fig5fi = go.Figure(go.Bar(
-                    x=_f_vals, y=_f_labels, orientation="h",
-                    marker_color=t["amber"], opacity=0.85,
+            # ── Generate step-ahead predictions for the historical window ──
+            _step_preds = np.full(len(_hist_cl), np.nan)
+            if _feat_live is not None:
+                _feat_hist = _feat_live.reindex(_hist_dates, method="nearest").dropna()
+                if len(_feat_hist) > 0:
+                    try:
+                        _fh_rows = _feat_hist[_5m_result["features"]].values.astype(np.float32)
+                        _fh_rows = _5m_result["scaler"].transform(_fh_rows)
+                        _fh_preds = _5m_result["model"].predict(_fh_rows)
+                        _horizon5 = _5m_result.get("horizon", 1)
+                        for _ii, _idx in enumerate(_hist_dates):
+                            _pos = list(_hist_dates).index(_idx) if _idx in _hist_dates else -1
+                            if _pos >= _horizon5:
+                                _ref = _pos - _horizon5
+                                if _ref < len(_fh_preds) and _ref < len(_hist_cl):
+                                    _step_preds[_pos] = _hist_cl[_ref] * (1 + _fh_preds[_ref])
+                    except Exception:
+                        pass
+
+            # ── Forecast: next _n_fut bars ──────────────────────────────────
+            try:
+                _freq5 = pd.infer_freq(_hist_dates[-20:]) or "5min"
+            except Exception:
+                _freq5 = "5min"
+            _fut_dates = pd.date_range(start=_hist_dates[-1], periods=_n_fut + 1, freq=_freq5)[1:]
+            _fut_prices = []
+            _proj = float(_hist_cl[-1])
+            for _fi in range(_n_fut):
+                try:
+                    _feat_last = _feat_live.iloc[[-1]][_5m_result["features"]].values.astype(np.float32)
+                    _feat_last = _5m_result["scaler"].transform(_feat_last)
+                    _fr = float(_5m_result["model"].predict(_feat_last)[0])
+                    _proj = _proj * (1 + _fr)
+                    _fut_prices.append(_proj)
+                except Exception:
+                    _fut_prices.append(_proj)  # flat if prediction fails
+
+            # ── Build figure ──────────────────────────────────────────────
+            _fig5c = _msp(rows=2, cols=1, shared_xaxes=True,
+                          row_heights=[0.72, 0.28], vertical_spacing=0.03)
+
+            # Actual candlestick
+            _fig5c.add_trace(go.Candlestick(
+                x=_hist_dates,
+                open=_hist_df["Open"].values if "Open" in _hist_df.columns else _hist_cl,
+                high=_hist_df["High"].values if "High" in _hist_df.columns else _hist_cl,
+                low=_hist_df["Low"].values  if "Low"  in _hist_df.columns else _hist_cl,
+                close=_hist_cl,
+                name="Price",
+                increasing_line_color=t["green"], decreasing_line_color=t["red"],
+                increasing_fillcolor=f"rgba(0,201,167,0.2)",
+                decreasing_fillcolor=f"rgba(255,69,96,0.2)",
+                showlegend=True,
+            ), row=1, col=1)
+
+            # ML in-sample predicted prices (dotted amber)
+            _valid_step = [(d, p) for d, p in zip(_hist_dates, _step_preds) if not np.isnan(p)]
+            if _valid_step:
+                _vsd, _vsp = zip(*_valid_step)
+                _fig5c.add_trace(go.Scatter(
+                    x=list(_vsd), y=list(_vsp),
+                    name="ML Predicted Price", mode="lines",
+                    line=dict(color=t["amber"], width=1.5, dash="dot"),
+                    hovertemplate="Predicted: $%{y:,.4f}<extra></extra>",
+                ), row=1, col=1)
+
+            # Forecast zone
+            if _fut_prices:
+                _fp_arr = np.array(_fut_prices)
+                # Connector from last actual to first forecast
+                _fig5c.add_trace(go.Scatter(
+                    x=[_hist_dates[-1], _fut_dates[0]],
+                    y=[float(_hist_cl[-1]), _fut_prices[0]],
+                    mode="lines",
+                    line=dict(color=_sig_col5 if _pred_ret else t["amber"], width=1, dash="dot"),
+                    showlegend=False, hoverinfo="skip",
+                ), row=1, col=1)
+                _fig5c.add_trace(go.Scatter(
+                    x=list(_fut_dates), y=list(_fp_arr),
+                    name=f"Forecast +{_n_fut} bars",
+                    mode="lines+markers",
+                    line=dict(color=_sig_col5 if _pred_ret else t["amber"], width=2.5, dash="dash"),
+                    marker=dict(size=6, color=_sig_col5 if _pred_ret else t["amber"],
+                                symbol="circle-open"),
+                    hovertemplate="Forecast: $%{y:,.4f}<extra></extra>",
+                ), row=1, col=1)
+                # Uncertainty band ±ATR
+                _band = _atr_last * 1.5
+                _fig5c.add_trace(go.Scatter(
+                    x=list(_fut_dates) + list(reversed(list(_fut_dates))),
+                    y=list(_fp_arr + _band) + list(reversed(list(_fp_arr - _band))),
+                    fill="toself",
+                    fillcolor="rgba(255,184,0,0.08)" if not light_mode else "rgba(150,98,10,0.07)",
+                    line_color="rgba(0,0,0,0)",
+                    name="Uncertainty ±ATR",
+                    hoverinfo="skip",
+                ), row=1, col=1)
+                # Entry / SL / TP lines if active signal
+                if _pred_ret is not None and _sig5 != "HOLD":
+                    for _px_line, _lc, _lbl in [
+                        (_close_last, t["amber"],  f"Entry ${_close_last:,.4f}"),
+                        (_sl5,        t["red"],    f"SL ${_sl5:,.4f}"),
+                        (_tp5,        t["green"],  f"TP ${_tp5:,.4f}"),
+                    ]:
+                        _fig5c.add_hline(
+                            y=_px_line, line_color=_lc, line_width=1.2,
+                            line_dash="dot",
+                            annotation_text=f"  {_lbl}",
+                            annotation_font=dict(size=9, color=_lc),
+                            annotation_position="right",
+                            row=1, col=1,
+                        )
+
+            # OOS accuracy rolling panel (bottom)
+            _oos_pred5 = np.array(_5m_result.get("oos_pred", []))
+            _oos_act5  = np.array(_5m_result.get("oos_act",  []))
+            _oos_dt5   = pd.to_datetime(_5m_result.get("oos_dates", []))
+            if len(_oos_pred5) > 10 and len(_oos_dt5) == len(_oos_pred5):
+                _correct5 = (np.sign(_oos_act5) == np.sign(_oos_pred5)).astype(float)
+                _win5 = min(20, max(5, len(_correct5) // 8))
+                _roll5 = pd.Series(_correct5).rolling(_win5, min_periods=3).mean() * 100
+                _fig5c.add_trace(go.Scatter(
+                    x=_oos_dt5, y=_roll5,
+                    name=f"{_win5}-bar rolling acc",
+                    line=dict(color=t["blue"], width=1.5),
+                    fill="tozeroy",
+                    fillcolor="rgba(75,159,255,0.10)",
+                    hovertemplate="%{y:.1f}%<extra></extra>",
+                ), row=2, col=1)
+                _fig5c.add_hline(y=50, line_color=t["red"], line_width=0.8,
+                                 line_dash="dot", row=2, col=1)
+
+            # Layout
+            _lay5c = _plotly_base(
+                t,
+                f"{symbol} · {interval} · Last {_n_hist} bars + {_n_fut}-bar forecast",
+                height=560,
+            )
+            _lay5c["xaxis"]  = {**_lay5c.get("xaxis", {}),
+                                 "rangeslider": dict(visible=False),
+                                 "type": "date",
+                                 "tickfont": dict(size=9, color=t["text_mute"])}
+            _lay5c["xaxis2"] = dict(gridcolor=t["grid"], tickfont=dict(size=9, color=t["text_mute"]))
+            _lay5c["yaxis"]  = {**_lay5c.get("yaxis", {}),
+                                 "title": dict(text="Price ($)", font=dict(size=9)),
+                                 "side": "right", "gridcolor": t["grid"]}
+            _lay5c["yaxis2"] = dict(
+                gridcolor=t["grid"], showgrid=True, zeroline=False,
+                tickfont=dict(size=9, color=t["text_mute"]),
+                title=dict(text="Dir. Acc %", font=dict(size=9)),
+                range=[0, 100], side="right",
+            )
+            _lay5c["margin"]    = dict(l=10, r=130, t=44, b=50)
+            _lay5c["dragmode"]  = "pan"
+            _lay5c["hovermode"] = "x unified"
+            _lay5c["legend"]    = dict(
+                orientation="h", x=0.5, y=-0.06,
+                xanchor="center", yanchor="top",
+                bgcolor="rgba(0,0,0,0)",
+                font=dict(size=9, color=t["text_sec"]),
+            )
+            _fig5c.update_layout(**_lay5c)
+
+            st.plotly_chart(
+                _fig5c, use_container_width=True,
+                config=dict(
+                    scrollZoom=True, displayModeBar=True,
+                    modeBarButtonsToRemove=["lasso2d", "select2d", "autoScale2d",
+                                            "toggleSpikelines"],
+                    responsive=True,
+                ),
+            )
+        except Exception as _ce:
+            st.warning(f"Could not render forecast chart: {_ce}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    #  OOS EQUITY CURVE + FEATURE IMPORTANCE
+    # ─────────────────────────────────────────────────────────────────────────
+    if PLOTLY_OK:
+        _oos_pred5 = np.array(_5m_result.get("oos_pred", []))
+        _oos_act5  = np.array(_5m_result.get("oos_act",  []))
+        _oos_dt5   = pd.to_datetime(_5m_result.get("oos_dates", []))
+        _cost5     = _5m_result.get("cost_pct", _total_cost_pct)
+        _hurdle5   = _5m_result.get("hurdle_pct", _hurdle_pct / 100)
+
+        _eq_col, _fi_col = st.columns([1, 1], gap="small")
+
+        # Equity curve
+        if len(_oos_pred5) > 5:
+            try:
+                _pnl5e  = np.where(_oos_pred5 >  _hurdle5, _oos_act5,
+                           np.where(_oos_pred5 < -_hurdle5, -_oos_act5, 0.0)) - _cost5
+                _cum5   = np.cumprod(1 + _pnl5e) - 1
+                _equity = (1 + _cum5) * 100  # start at 100
+
+                _fe = go.Figure()
+                _fe.add_trace(go.Scatter(
+                    x=_oos_dt5, y=_equity,
+                    name="Equity (OOS)", mode="lines",
+                    line=dict(color=t["green"] if _equity[-1] >= 100 else t["red"], width=2),
+                    fill="tozeroy",
+                    fillcolor=f"rgba(0,201,167,0.07)" if _equity[-1] >= 100 else "rgba(255,69,96,0.07)",
                 ))
-                _lay5fi = _plotly_base(t, "HF Feature Importance (Top 12)", height=320)
-                _lay5fi["yaxis"] = {**_lay5fi.get("yaxis", {}), "autorange": "reversed"}
-                _fig5fi.update_layout(**_lay5fi)
-                st.plotly_chart(_fig5fi, use_container_width=True, config=dict(displayModeBar=False))
-        except Exception:
-            pass
+                _fe.add_hline(y=100, line_color=t["border"], line_width=1)
+                _le = _plotly_base(t, "OOS Equity (after costs & hurdle)", height=320)
+                _le["yaxis"] = {**_le.get("yaxis", {}),
+                                "title": dict(text="% of capital", font=dict(size=9)), "side": "right"}
+                _fe.update_layout(**_le)
+                with _eq_col:
+                    st.plotly_chart(_fe, use_container_width=True, config=dict(displayModeBar=False))
+            except Exception:
+                pass
 
+        # Feature importance
+        _fimp = _5m_result.get("feat_imp", {})
+        if _fimp:
+            try:
+                _fi_top = sorted(_fimp.items(), key=lambda x: x[1], reverse=True)[:12]
+                _fi_lbl = [k.replace("_", " ").title() for k, _ in _fi_top]
+                _fi_val = [v for _, v in _fi_top]
+                _fif = go.Figure(go.Bar(
+                    x=_fi_val, y=_fi_lbl, orientation="h",
+                    marker_color=t["amber"], opacity=0.85,
+                    hovertemplate="%{y}: %{x:.4f}<extra></extra>",
+                ))
+                _lif = _plotly_base(t, "Feature Importance (Top 12)", height=320)
+                _lif["yaxis"] = {**_lif.get("yaxis", {}), "autorange": "reversed"}
+                _fif.update_layout(**_lif)
+                with _fi_col:
+                    st.plotly_chart(_fif, use_container_width=True, config=dict(displayModeBar=False))
+            except Exception:
+                pass
+
+    # ── Reality check footer ──────────────────────────────────────────────────
+    _annual_drag5 = _total_cost_pct * _bars_per_day * 252 * 100
     st.markdown(f"""
 <div style="font-family:IBM Plex Mono;font-size:9px;color:{t['text_mute']};
-  padding:8px 12px;background:{t['surface']};border-radius:4px;border-left:3px solid {t['amber']};
-  margin-top:10px;line-height:1.7">
-⚠️ <b style="color:{t['amber']}">5-MIN TRADING REALITY CHECK:</b>
-Annual cost drag at {_trades_day} trades/day = <b>{_annual_drag:.0f}%</b>.
-Only trade when signal exceeds <b>{_hurdle_pct:.3f}%</b> (2× cost hurdle).
-Best results: liquid instruments (BTC, ETH, major FX) with tight spreads.
-Paper trade for 3–6 months before committing real capital.
+  padding:8px 12px;background:{t['surface']};border-radius:4px;
+  border-left:3px solid {t['amber']};margin-top:8px;line-height:1.8">
+⚠️ <b style="color:{t['amber']}">INTRADAY TRADING COST REALITY:</b> &nbsp;
+Cost per round-trip ≈ <b>{_total_cost_pct*100:.3f}%</b> &nbsp;·&nbsp;
+Profit hurdle ≈ <b>{_hurdle_pct:.3f}%</b> &nbsp;·&nbsp;
+At {_bars_per_day} bars/day the annual cost drag ≈ <b>{_annual_drag5:.0f}%</b> if trading every bar.
+Only trade when signal clearly exceeds the cost hurdle.
+Best results: liquid instruments (BTC, major FX) with tight spreads.
 </div>""", unsafe_allow_html=True)

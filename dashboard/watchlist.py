@@ -280,29 +280,46 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
     scan_btn = c5.button("SCAN ALL", type="primary", use_container_width=True)
 
     # ── TV Exchange selector (shown when source = tradingview) ────────────────
+    # Default to the main chart's TV exchange so watchlist inherits the same setting
+    _main_tv_exch = (
+        st.session_state.get("_tv_exchange_sel")
+        or st.session_state.get("_tv_exchange")
+        or "Auto-detect"
+    )
     wl_tv_exchange = None
     if wl_source == "tradingview":
         _wl_tv_presets = ["Auto-detect", "NASDAQ", "NYSE", "AMEX", "BINANCE",
                           "KRAKEN", "OANDA", "TVC", "DJ", "SP500", "NSE", "BSE", "LSE"]
-        _wl_tv_saved   = st.session_state.get("wl_tv_exchange", "Auto-detect")
-        _wl_tv_idx     = _wl_tv_presets.index(_wl_tv_saved) if _wl_tv_saved in _wl_tv_presets else 0
+        # Use persisted watchlist value, falling back to main chart's exchange
+        _wl_tv_saved = st.session_state.get("wl_tv_exchange", _main_tv_exch)
+        if _wl_tv_saved not in _wl_tv_presets:
+            _wl_tv_saved = "Auto-detect"
+        _wl_tv_idx = _wl_tv_presets.index(_wl_tv_saved)
         _tv_c1, _tv_c2, _tv_c3 = st.columns([1.5, 2, 5.5])
         _tv_c1.markdown(
-            '<div style="font-family:monospace;font-size:10px;color:#4a5a7a;padding-top:8px">TV EXCHANGE</div>',
+            '<div style="font-family:monospace;font-size:10px;color:#4a5a7a;padding-top:8px">'
+            'TV EXCHANGE</div>',
             unsafe_allow_html=True,
         )
         _wl_tv_sel = _tv_c2.selectbox(
             "", _wl_tv_presets, index=_wl_tv_idx,
             label_visibility="collapsed", key="wl_tv_exchange",
-            help="TradingView exchange. Auto-detect works for most symbols. Override if you get 'no data'.",
+            help="TradingView exchange. Auto-detect works for most symbols. "
+                 "Override if you see 'no data' — e.g. TVC for gold/oil, OANDA for FX, BINANCE for crypto.",
         )
         _wl_tv_custom = _tv_c3.text_input(
-            "", placeholder="Or type a custom exchange: EURONEXT, SGX ...",
+            "", placeholder="Or type a custom exchange: EURONEXT, SGX, TSX ...",
             label_visibility="collapsed", key="wl_tv_exchange_custom",
         )
         wl_tv_exchange = (
             _wl_tv_custom.strip().upper() if _wl_tv_custom.strip()
             else (None if _wl_tv_sel == "Auto-detect" else _wl_tv_sel)
+        )
+    elif wl_source != "tradingview":
+        # When not tradingview, show a subtle hint about TV exchange
+        st.caption(
+            "💡 Switch Source to **tradingview** to use the TV Exchange selector "
+            "(e.g. OANDA for XAUUSD, BINANCE for BTC, NASDAQ for US stocks)."
         )
 
     symbols = [s.strip().upper() for s in symbols_raw.split(",") if s.strip()]
