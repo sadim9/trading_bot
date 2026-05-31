@@ -101,7 +101,7 @@ SCAN_CACHE_TTL = 60
 
 # ── Scan one ticker ────────────────────────────────────────────────────────────
 def _scan_one(symbol: str, interval: str, source: str,
-              strategy_mode: str = "multi") -> Optional[dict]:
+              strategy_mode: str = "multi", tv_exchange=None) -> Optional[dict]:
     """Fetch data + compute full signal breakdown for one ticker."""
     try:
         from data.ingestion import load_data
@@ -111,12 +111,20 @@ def _scan_one(symbol: str, interval: str, source: str,
 
         df = None
         last_err = ""
-        for _src in [source, "yfinance", "sample"]:
+        _sources_to_try = [source, "yfinance", "sample"]
+        for _src in _sources_to_try:
             try:
+                _exch = tv_exchange if _src == "tradingview" else None
                 df = load_data(symbol, interval=interval, period="60d",
-                               source=_src, crypto_limit=300)
+                               source=_src, crypto_limit=300, exchange=_exch)
                 if df is not None and len(df) >= 5:
                     break
+                # If tradingview with custom exchange fails, retry with auto-detect
+                if _src == "tradingview" and _exch is not None:
+                    df = load_data(symbol, interval=interval, period="60d",
+                                   source=_src, crypto_limit=300, exchange=None)
+                    if df is not None and len(df) >= 5:
+                        break
             except Exception as _e:
                 last_err = str(_e)
                 df = None
@@ -195,6 +203,7 @@ def scan_watchlist(
     source: str = "yfinance",
     sym_strategies: dict = None,
     max_workers: int = 6,
+    tv_exchange=None,
 ) -> List[dict]:
     """Scan all symbols in parallel, applying per-symbol strategy overrides."""
     if sym_strategies is None:
@@ -210,6 +219,7 @@ def scan_watchlist(
                 # per-symbol source override, fallback to global source
                 sym_strategies.get(sym, {}).get("source_override", "(default)") if sym_strategies.get(sym, {}).get("source_override", "(default)") != "(default)" else source,
                 sym_strategies.get(sym, {}).get("strategy", "multi"),
+                tv_exchange,
             ): sym
             for sym in symbols
         }
@@ -268,6 +278,32 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
     )
 
     scan_btn = c5.button("SCAN ALL", type="primary", use_container_width=True)
+
+    # ── TV Exchange selector (shown when source = tradingview) ────────────────
+    wl_tv_exchange = None
+    if wl_source == "tradingview":
+        _wl_tv_presets = ["Auto-detect", "NASDAQ", "NYSE", "AMEX", "BINANCE",
+                          "KRAKEN", "OANDA", "TVC", "DJ", "SP500", "NSE", "BSE", "LSE"]
+        _wl_tv_saved   = st.session_state.get("wl_tv_exchange", "Auto-detect")
+        _wl_tv_idx     = _wl_tv_presets.index(_wl_tv_saved) if _wl_tv_saved in _wl_tv_presets else 0
+        _tv_c1, _tv_c2, _tv_c3 = st.columns([1.5, 2, 5.5])
+        _tv_c1.markdown(
+            '<div style="font-family:monospace;font-size:10px;color:#4a5a7a;padding-top:8px">TV EXCHANGE</div>',
+            unsafe_allow_html=True,
+        )
+        _wl_tv_sel = _tv_c2.selectbox(
+            "", _wl_tv_presets, index=_wl_tv_idx,
+            label_visibility="collapsed", key="wl_tv_exchange",
+            help="TradingView exchange. Auto-detect works for most symbols. Override if you get 'no data'.",
+        )
+        _wl_tv_custom = _tv_c3.text_input(
+            "", placeholder="Or type a custom exchange: EURONEXT, SGX ...",
+            label_visibility="collapsed", key="wl_tv_exchange_custom",
+        )
+        wl_tv_exchange = (
+            _wl_tv_custom.strip().upper() if _wl_tv_custom.strip()
+            else (None if _wl_tv_sel == "Auto-detect" else _wl_tv_sel)
+        )
 
     symbols = [s.strip().upper() for s in symbols_raw.split(",") if s.strip()]
     if not symbols:
@@ -362,6 +398,7 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
             results = scan_watchlist(
                 symbols, interval=wl_interval, source=wl_source,
                 sym_strategies=sym_strategies,
+                tv_exchange=wl_tv_exchange,
             )
         st.session_state[cache_key]      = results
         st.session_state["wl_last_scan"] = time.time()
@@ -389,7 +426,9 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
         f'<span style="color:#8899bb">HOLD: <b>{holds}</b></span>'
         f'<span style="color:#4a5a7a">/ {total} tickers</span>'
         f'<span style="color:#4a5a7a;margin-left:auto">'
-        f'{wl_interval} · {wl_source.upper()}</span>'
+        f'{wl_interval} · {wl_source.upper()}'
+        f'{(" · " + str(wl_tv_exchange)) if wl_source == "tradingview" and wl_tv_exchange else ""}'
+        f'</span>'
         f'</div>',
         unsafe_allow_html=True,
     )

@@ -51,6 +51,10 @@ _PERSIST_KEYS = [
     "_tv_exchange_custom",
     "_tv_exchange_override",
     "planned_trade_amount",
+    # ML config
+    "_ml_model_type",
+    "_ml_horizon",
+    "_ml_cv_folds",
 ]
 
 

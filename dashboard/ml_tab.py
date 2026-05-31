@@ -11,13 +11,57 @@ Key design principles:
 
 from __future__ import annotations
 
+import os
+import pickle
 import warnings
 import numpy as np
 import pandas as pd
 import streamlit as st
+from pathlib import Path
 from typing import Optional
 
 warnings.filterwarnings("ignore")
+
+_MODEL_DIR = Path(os.getenv("SETTINGS_DIR", "/app/logs"))
+
+
+def _model_path(symbol: str, model_type: str, horizon: int) -> Path:
+    safe = symbol.replace("/", "_").replace(":", "_")
+    return _MODEL_DIR / f"ml_model_{safe}_{model_type}_h{horizon}.pkl"
+
+
+def _save_model(result, symbol: str, model_type: str, horizon: int):
+    """Persist a trained MLTrainingResult to disk."""
+    try:
+        _MODEL_DIR.mkdir(parents=True, exist_ok=True)
+        p = _model_path(symbol, model_type, horizon)
+        with open(p, "wb") as f:
+            pickle.dump(result, f)
+    except Exception:
+        try:
+            fb = Path(".cache")
+            fb.mkdir(exist_ok=True)
+            safe = symbol.replace("/", "_").replace(":", "_")
+            p2 = fb / f"ml_model_{safe}_{model_type}_h{horizon}.pkl"
+            with open(p2, "wb") as f:
+                pickle.dump(result, f)
+        except Exception:
+            pass
+
+
+def _load_model(symbol: str, model_type: str, horizon: int):
+    """Load a previously saved MLTrainingResult from disk."""
+    for p in [
+        _model_path(symbol, model_type, horizon),
+        Path(".cache") / f"ml_model_{symbol.replace('/', '_').replace(':', '_')}_{model_type}_h{horizon}.pkl",
+    ]:
+        try:
+            if p.exists():
+                with open(p, "rb") as f:
+                    return pickle.load(f)
+        except Exception:
+            continue
+    return None
 
 try:
     import plotly.graph_objects as go
@@ -132,48 +176,81 @@ def render_ml_tab(
             del sess[_k]
     sess["_ml_active_symbol"] = symbol
 
-    # ── Model configuration ────────────────────────────────────────────────────
+    # ── Model configuration — wrapped in a form to prevent per-widget reruns ─────
     _has_any_result = any(k.startswith(f"ml_result_{symbol}_") for k in sess.keys())
+    # Restore persisted config defaults
+    _saved_model_type = sess.get("_ml_model_type", "ensemble")
+    _saved_horizon    = sess.get("_ml_horizon", 1)
+    _saved_cv         = sess.get("_ml_cv_folds", 3)
+
+    model_labels = ["Ensemble (Best)", "Random Forest", "Elastic Net", "Neural Net NN3"]
+    model_vals   = ["ensemble",        "random_forest", "elastic_net", "neural_net"]
+    _model_default_idx = model_vals.index(_saved_model_type) if _saved_model_type in model_vals else 0
+    _horizon_opts  = [1, 3, 5, 10, 20]
+    _horizon_default_idx = _horizon_opts.index(_saved_horizon) if _saved_horizon in _horizon_opts else 0
+    _cv_opts = [3, 5]
+    _cv_default_idx = _cv_opts.index(_saved_cv) if _saved_cv in _cv_opts else 0
+
     with st.expander("⚙ MODEL CONFIGURATION", expanded=not _has_any_result):
-        c1, c2, c3, c4 = st.columns([2, 1.5, 1.5, 1])
-        model_labels = ["Ensemble (Best)", "Random Forest", "Elastic Net", "Neural Net NN3"]
-        model_vals   = ["ensemble",        "random_forest", "elastic_net", "neural_net"]
-        model_label  = c1.selectbox(
-            "Model", model_labels, index=0,
-            help="Ensemble combines the best models for your dataset size. "
-                 "Neural Net requires 600+ bars and works best with daily data.",
-        )
-        model_type = model_vals[model_labels.index(model_label)]
-
-        horizon = c2.selectbox(
-            "Horizon", [1, 3, 5, 10, 20], index=0,
-            format_func=lambda x: f"{x} bar{'s' if x>1 else ''}",
-            help="Bars ahead to predict. Shorter horizons = more frequent signals.",
-        )
-        n_cv = c3.selectbox("CV Folds", [3, 5], index=0)
-        train_btn = c4.button("▶ TRAIN", type="primary", use_container_width=True)
-
-        # Data quality inline guidance
-        st.markdown(
-            f'<div style="margin-top:8px">{_quality_badge(quality_hint, t)}</div>',
-            unsafe_allow_html=True,
-        )
-        if n_bars < 2000:
-            st.caption(
-                f"💡 **Tip:** You have {n_bars} bars of {interval} data. "
-                "For the best ML results, switch to **1d** interval with **2y** period "
-                "(≈500 bars) — daily data has cleaner signal-to-noise than intraday."
+        with st.form("ml_config_form", clear_on_submit=False):
+            c1, c2, c3, c4 = st.columns([2, 1.5, 1.5, 1])
+            model_label = c1.selectbox(
+                "Model", model_labels, index=_model_default_idx,
+                help="Ensemble combines the best models for your dataset size. "
+                     "Neural Net requires 600+ bars and works best with daily data.",
             )
+            model_type = model_vals[model_labels.index(model_label)]
+
+            horizon = c2.selectbox(
+                "Horizon", _horizon_opts, index=_horizon_default_idx,
+                format_func=lambda x: f"{x} bar{'s' if x>1 else ''}",
+                help="Bars ahead to predict. Shorter horizons = more frequent signals.",
+            )
+            n_cv = c3.selectbox("CV Folds", _cv_opts, index=_cv_default_idx)
+            train_btn = c4.form_submit_button("▶ TRAIN", type="primary", use_container_width=True)
+
+            # Data quality inline guidance
+            st.markdown(
+                f'<div style="margin-top:8px">{_quality_badge(quality_hint, t)}</div>',
+                unsafe_allow_html=True,
+            )
+            if n_bars < 2000:
+                st.caption(
+                    f"💡 **Tip:** You have {n_bars} bars of {interval} data. "
+                    "For the best ML results, switch to **1d** interval with **2y** period "
+                    "(≈500 bars) — daily data has cleaner signal-to-noise than intraday."
+                )
+
+    # Persist config whenever it changes (form submit)
+    if train_btn:
+        from dashboard.settings_store import save_settings
+        sess["_ml_model_type"] = model_type
+        sess["_ml_horizon"]    = horizon
+        sess["_ml_cv_folds"]   = n_cv
+        save_settings()
+    else:
+        # Keep in sync even without training
+        model_type = sess.get("_ml_model_type", model_type)
+        horizon    = sess.get("_ml_horizon",    horizon)
+        n_cv       = sess.get("_ml_cv_folds",   n_cv)
 
     # ── Training (only on button click) ───────────────────────────────────────
     _cache_key = f"ml_result_{symbol}_{model_type}_{horizon}"
     result = sess.get(_cache_key)
 
+    # Try loading from disk if not in session
+    if result is None:
+        result = _load_model(symbol, model_type, horizon)
+        if result is not None:
+            sess[_cache_key] = result
+
     if train_btn:
-        _MH_HORIZONS = [1, 5, 20]   # always train all three for multi-horizon display
+        # Always include the selected horizon; also train H1, H5, H20 for multi-horizon display
+        _MH_HORIZONS = list(dict.fromkeys([horizon, 1, 5, 20]))
         _total_steps  = len(_MH_HORIZONS)
         _prog = st.progress(0, text="Initialising …")
         _stat = st.empty()
+        result = None  # reset so we get the fresh result
 
         try:
             from ml.trainer import train as ml_train
@@ -182,7 +259,7 @@ def render_ml_tab(
                 _is_primary = (_h == horizon)
                 _h_key      = f"ml_result_{symbol}_{model_type}_{_h}" if _is_primary \
                               else f"ml_mh_{symbol}_{model_type}_{_h}"
-                _h_cv       = n_cv if _is_primary else 2   # fewer folds for secondary horizons
+                _h_cv       = n_cv if _is_primary else 2
 
                 _base_pct = int(_hi / _total_steps * 100)
 
@@ -197,23 +274,32 @@ def render_ml_tab(
                     progress_callback=_cb,
                 )
                 sess[_h_key] = _h_result
+                # Save to disk
+                _save_model(_h_result, symbol, model_type, _h)
 
-                # Also store primary result under the selected horizon cache key
                 if _is_primary:
                     result = _h_result
+                    sess[_cache_key] = _h_result
+
+            # Safety: if selected horizon wasn't in list somehow, use first trained
+            if result is None:
+                result = sess.get(_cache_key)
 
             _prog.progress(1.0, text="All horizons trained ✓")
             _prog.empty()
             _stat.empty()
-            st.toast(
-                f"✅ {model_type.replace('_',' ').title()} trained — "
-                f"H1/H5/H20 ready · Dir. Acc: {result.directional_acc*100:.1f}%",
-                icon="🤖",
-            )
+            if result is not None:
+                st.toast(
+                    f"✅ {model_type.replace('_',' ').title()} trained — "
+                    f"H1/H5/H20 ready · Dir. Acc: {result.directional_acc*100:.1f}%",
+                    icon="🤖",
+                )
         except Exception as e:
             _prog.empty()
             _stat.empty()
             st.error(f"Training failed: {e}")
+            import traceback
+            st.code(traceback.format_exc(), language="python")
             return
 
     if result is None:
@@ -326,6 +412,12 @@ def render_ml_tab(
             f"Model: **{result.model_type}** · Symbol: {result.symbol} · "
             f"CV Folds: {len(result.cv_folds)} · Data quality: **{result.data_quality}**"
         )
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    #  5-MINUTE PREDICTION ENGINE (separate section)
+    # ═══════════════════════════════════════════════════════════════════════════
+    st.markdown("<hr style='margin:18px 0'>", unsafe_allow_html=True)
+    _render_5min_section(df, symbol, interval, t, light_mode)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -701,7 +793,69 @@ def _chart_price_prediction_line(result, df: pd.DataFrame, t: dict) -> go.Figure
     ), row=2, col=1)
     fig.add_hline(y=0, line_color=t["border"], line_width=0.8, row=2, col=1)
 
-    lay = _plotly_base(t, f"Actual vs ML-Predicted Price  ·  OOS period  ·  horizon={horizon} bar(s)", height=460)
+    # ── Future predictions (next 20 bars) ────────────────────────────────────
+    _n_future = 20
+    try:
+        from ml.features import build_features, rank_standardise
+        _feat_full = build_features(df_full)
+        if len(_feat_full) >= 2:
+            _last_close = float(df_full["Close"].iloc[-1])
+            _last_date  = df_full.index[-1]
+            # Infer bar frequency for future timestamps
+            try:
+                _freq = pd.infer_freq(df_full.index[-20:]) or "B"
+            except Exception:
+                _freq = "B"
+            _future_dates  = pd.date_range(start=_last_date, periods=_n_future + 1, freq=_freq)[1:]
+            _future_prices = []
+            _current_proj  = _last_close
+            for _fi in range(_n_future):
+                try:
+                    _X = _feat_full.iloc[[-1]].copy()
+                    for _col in _X.columns:
+                        _X[_col] = rank_standardise(_feat_full[_col]).iloc[-1]
+                    _X_arr = _X.values.astype(np.float32)
+                    _raw = float(result.model.predict(_X_arr)[0])
+                    if result.model_type == "ensemble" and result.oos_actual:
+                        _oos_std = float(np.std(result.oos_actual)) or 0.01
+                        _ret = _raw * _oos_std * 2
+                    else:
+                        _ret = _raw
+                    _current_proj = _current_proj * (1 + _ret)
+                    _future_prices.append(_current_proj)
+                except Exception:
+                    _future_prices.append(np.nan)
+
+            _valid_fut = [(d, p) for d, p in zip(_future_dates, _future_prices) if not np.isnan(p)]
+            if _valid_fut:
+                _fd, _fp = zip(*_valid_fut)
+                # Connector from last actual to first forecast
+                fig.add_trace(go.Scatter(
+                    x=[dates_use[-1], _fd[0]], y=[closes[-1], _fp[0]],
+                    mode="lines", line=dict(color=t["amber"], width=1, dash="dot"),
+                    showlegend=False, hoverinfo="skip",
+                ), row=1, col=1)
+                fig.add_trace(go.Scatter(
+                    x=list(_fd), y=list(_fp),
+                    name=f"Forecast +{_n_future} bars", mode="lines+markers",
+                    line=dict(color=t["amber"], width=2, dash="dash"),
+                    marker=dict(size=5, color=t["amber"]),
+                    hovertemplate="Forecast: $%{y:,.4f}<extra></extra>",
+                ), row=1, col=1)
+                # Shaded uncertainty band (±1% of forecast)
+                _fp_arr = np.array(_fp)
+                fig.add_trace(go.Scatter(
+                    x=list(_fd) + list(reversed(list(_fd))),
+                    y=list(_fp_arr * 1.01) + list(reversed(list(_fp_arr * 0.99))),
+                    fill="toself",
+                    fillcolor="rgba(255,184,0,0.08)" if not False else "rgba(150,98,10,0.08)",
+                    line_color="rgba(0,0,0,0)",
+                    showlegend=False, hoverinfo="skip",
+                ), row=1, col=1)
+    except Exception:
+        pass
+
+    lay = _plotly_base(t, f"Actual vs ML-Predicted Price  ·  OOS period  ·  +{_n_future}-bar forecast", height=500)
     lay["xaxis"] = {**lay.get("xaxis", {}),
                     "rangeslider": dict(visible=True, thickness=0.05,
                                        bgcolor=t["surface"], bordercolor=t["border"]),
@@ -944,3 +1098,293 @@ def _fmt_feat(key: str) -> str:
         "f_breakout_u": "Breakout Up", "f_breakout_d": "Breakout Down",
         "f_range_pos": "Range Position", "f_price_accel": "Price Acceleration",
     }.get(key, key.replace("f_", "").replace("_", " ").title())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  5-MINUTE PREDICTION ENGINE
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_hf_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Build high-frequency (5-min optimised) predictive features from OHLCV bars."""
+    features = pd.DataFrame(index=df.index)
+    closes = df["close"] if "close" in df.columns else df["Close"]
+    opens  = df["open"]  if "open"  in df.columns else df["Open"]
+    highs  = df["high"]  if "high"  in df.columns else df["High"]
+    lows   = df["low"]   if "low"   in df.columns else df["Low"]
+    volumes = df["volume"] if "volume" in df.columns else df.get("Volume", pd.Series(1, index=df.index))
+
+    for n in [1, 3, 6, 12, 24, 48]:
+        features[f"ret_{n}"] = closes.pct_change(n)
+
+    features["reversal_1"] = -features["ret_1"]
+    returns = closes.pct_change()
+    for n in [6, 12, 36, 78]:
+        features[f"realvol_{n}"] = returns.rolling(n).std() * np.sqrt(n)
+
+    avg_vol = volumes.rolling(78).mean().replace(0, np.nan)
+    features["vol_ratio"]  = volumes / avg_vol
+    features["vol_trend"]  = volumes.rolling(6).mean() / volumes.rolling(24).mean().replace(0, np.nan)
+    features["bar_range"]  = (highs - lows) / closes.replace(0, np.nan)
+    features["close_pos"]  = (closes - lows) / (highs - lows + 1e-8)
+
+    for n in [12, 36, 78]:
+        rh = highs.rolling(n).max()
+        rl = lows.rolling(n).min()
+        features[f"range_pos_{n}"] = (closes - rl) / (rh - rl + 1e-8)
+
+    for n in [6, 12, 24, 78]:
+        ma = closes.rolling(n).mean()
+        features[f"vs_ma_{n}"] = (closes - ma) / ma.replace(0, np.nan)
+
+    features["near_bottom"] = 1 - features.get("range_pos_78", 0)
+
+    # Time-of-day (cycle encoding so model treats 09:30 and 09:35 as close)
+    hours   = df.index.hour + df.index.minute / 60
+    features["time_sin"] = np.sin(2 * np.pi * hours / 24)
+    features["time_cos"] = np.cos(2 * np.pi * hours / 24)
+
+    return features.replace([np.inf, -np.inf], np.nan).dropna()
+
+
+def _render_5min_section(df: pd.DataFrame, symbol: str, interval: str, t: dict, light_mode: bool):
+    """Render the 5-minute high-frequency prediction section."""
+    sess = st.session_state
+
+    st.markdown(
+        '<div class="qt-section">⚡ 5-MINUTE HIGH-FREQUENCY PREDICTION ENGINE</div>',
+        unsafe_allow_html=True,
+    )
+
+    with st.expander("ℹ️ About 5-Minute Prediction", expanded=False):
+        st.markdown("""
+**Important context for 5-minute ML trading:**
+
+| | Monthly (Paper) | 5-Minute (This section) |
+|---|---|---|
+| Signal-to-noise | Low but manageable | Extremely low |
+| Best model | Feed-forward NN | Short-term momentum + reversal |
+| Key signals | Fundamentals + momentum | Price position in range, volume surge |
+| Annual cost drag | ~1.2% | **~720%** at 10 trades/day |
+| Realistic Sharpe | 0.8–1.2 | 0.3–0.8 (if done well) |
+
+⚠️ **Transaction costs dominate at 5-minute frequency.** Each round-trip trade costs ~0.04%.
+At 10 trades/day × 252 days = ~$720 cost per $1,000 traded. Your strategy must generate
+extraordinary gross returns just to break even.
+
+💡 **Recommended:** Use this section to identify intraday momentum and range signals,
+but only trade when the predicted return **clearly exceeds the cost hurdle** shown below.
+""")
+
+    # ── Only useful for intraday data ─────────────────────────────────────────
+    _is_intraday = interval in ("1m", "5m", "15m", "30m")
+    if not _is_intraday:
+        st.info(
+            "ℹ️ **5-min section requires intraday data.** "
+            "Switch interval to **5m** or **15m** and reload data to use this section. "
+            "Daily data is better suited for the main ML engine above.",
+            icon="📊",
+        )
+        return
+
+    if df is None or len(df) < 100:
+        st.warning("⚠️ Need at least 100 intraday bars. Load more data (30d period on 5m interval).")
+        return
+
+    n_bars = len(df)
+
+    # ── Cost model ───────────────────────────────────────────────────────────
+    _spread_bps     = 2.0
+    _commission_bps = 0.5
+    _impact_bps     = 1.0
+    _slippage_bps   = 0.5
+    _total_cost_pct = (_spread_bps + _commission_bps + _impact_bps + _slippage_bps) / 10000
+    _hurdle_pct     = _total_cost_pct * 2 * 100  # 2× safety buffer
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Cost per Trade",   f"{_total_cost_pct*100:.3f}%",   "round-trip")
+    c2.metric("Profit Hurdle",    f"{_hurdle_pct:.3f}%",           "2× cost buffer")
+    c3.metric("Bars Loaded",      f"{n_bars}")
+    _trades_day = 390 // int(interval.replace("m", "")) if interval.endswith("m") else 1
+    _annual_drag = _total_cost_pct * _trades_day * 252 * 100
+    c4.metric("Annual Cost Drag", f"{_annual_drag:.0f}%",          f"if {_trades_day} trades/day")
+
+    # ── 5-min model config + train ────────────────────────────────────────────
+    _5m_cache_key = f"ml5m_result_{symbol}"
+    _5m_result    = sess.get(_5m_cache_key)
+
+    # Try loading from disk
+    if _5m_result is None:
+        _5m_result = _load_model(symbol, "hf_rf", 1)
+        if _5m_result is not None:
+            sess[_5m_cache_key] = _5m_result
+
+    with st.form("ml5m_config_form", clear_on_submit=False):
+        _fc1, _fc2, _fc3 = st.columns([2, 2, 1])
+        _5m_n_cv  = _fc1.selectbox("CV Folds", [3, 5], index=0, key="ml5m_cv")
+        _5m_h     = _fc2.selectbox(
+            "Predict ahead", [1, 3, 6, 12], index=0,
+            format_func=lambda x: f"{x} bar{'s' if x>1 else ''} ({x * int(interval.replace('m','')) if interval.endswith('m') else x} min)",
+            key="ml5m_horizon",
+        )
+        _train5m_btn = _fc3.form_submit_button("⚡ TRAIN HF", type="primary", use_container_width=True)
+
+    if _train5m_btn:
+        _prog5 = st.progress(0, text="Building HF features …")
+        try:
+            from sklearn.ensemble import RandomForestRegressor
+            from sklearn.preprocessing import StandardScaler
+
+            _feat = _build_hf_features(df)
+            if len(_feat) < 60:
+                st.error("Not enough clean HF features — need more data.")
+                _prog5.empty()
+                return
+
+            _closes = (df["close"] if "close" in df.columns else df["Close"]).reindex(_feat.index)
+            _y_arr  = _closes.pct_change(_5m_h).shift(-_5m_h).reindex(_feat.index).dropna()
+            _X_feat = _feat.reindex(_y_arr.index)
+
+            _prog5.progress(0.25, text="Fitting Random Forest …")
+            _n = len(_y_arr)
+            _split = int(_n * 0.75)
+            _X_tr, _y_tr = _X_feat.iloc[:_split].values, _y_arr.values[:_split]
+            _X_te, _y_te = _X_feat.iloc[_split:].values, _y_arr.values[_split:]
+
+            _scaler = StandardScaler()
+            _X_tr_s = _scaler.fit_transform(_X_tr)
+            _X_te_s = _scaler.transform(_X_te)
+
+            _rf = RandomForestRegressor(
+                n_estimators=80, max_depth=6, min_samples_leaf=5,
+                n_jobs=-1, random_state=42,
+            )
+            _rf.fit(_X_tr_s, _y_tr)
+
+            _prog5.progress(0.75, text="Evaluating OOS …")
+            _y_pred_te = _rf.predict(_X_te_s)
+            _dir_acc   = float((np.sign(_y_te) == np.sign(_y_pred_te)).mean())
+
+            # Sharpe estimate
+            _pnl = np.where(_y_pred_te > 0, _y_te, -_y_te) - _total_cost_pct
+            _sharpe = float(_pnl.mean() / (_pnl.std() + 1e-9) * np.sqrt(_trades_day * 252))
+
+            _5m_result = {
+                "model":     _rf,
+                "scaler":    _scaler,
+                "features":  _feat.columns.tolist(),
+                "horizon":   _5m_h,
+                "interval":  interval,
+                "dir_acc":   _dir_acc,
+                "sharpe":    _sharpe,
+                "oos_pred":  _y_pred_te.tolist(),
+                "oos_act":   _y_te.tolist(),
+                "oos_dates": _y_arr.index[_split:].tolist(),
+                "feat_imp":  dict(zip(_feat.columns, _rf.feature_importances_)),
+                "symbol":    symbol,
+                "n_bars":    _n,
+            }
+            sess[_5m_cache_key] = _5m_result
+            _save_model(_5m_result, symbol, "hf_rf", _5m_h)
+
+            _prog5.progress(1.0, text="HF model trained ✓")
+            _prog5.empty()
+            st.toast(
+                f"⚡ HF model trained — Dir. Acc: {_dir_acc*100:.1f}% · Est. Sharpe: {_sharpe:.2f}",
+                icon="⚡",
+            )
+        except Exception as _e5m:
+            _prog5.empty()
+            st.error(f"HF training failed: {_e5m}")
+            return
+
+    if _5m_result is None:
+        st.info(
+            f"No 5-min HF model for **{symbol}** yet. "
+            "Load intraday data (5m/15m interval, 30d period), then click **⚡ TRAIN HF**."
+        )
+        return
+
+    # ── HF Metrics ───────────────────────────────────────────────────────────
+    _dir_acc   = _5m_result.get("dir_acc", 0)
+    _sharpe_hf = _5m_result.get("sharpe", 0)
+    _oos_pred  = np.array(_5m_result.get("oos_pred", []))
+    _oos_act   = np.array(_5m_result.get("oos_act",  []))
+    _oos_dates = _5m_result.get("oos_dates", [])
+
+    _m1, _m2, _m3, _m4 = st.columns(4)
+    _dir_col = t["green"] if _dir_acc > 0.52 else (t["amber"] if _dir_acc > 0.48 else t["red"])
+    _sh_col  = t["green"] if _sharpe_hf > 0 else t["red"]
+    _m1.metric("Dir. Accuracy", f"{_dir_acc*100:.1f}%", "above 52% = edge")
+    _m2.metric("Est. Sharpe",   f"{_sharpe_hf:.2f}",    "after costs")
+    _m3.metric("HF Bars Trained", f"{_5m_result.get('n_bars', 0)}")
+    # Current prediction
+    try:
+        _feat_now = _build_hf_features(df)
+        if len(_feat_now) > 0:
+            _X_now = _5m_result["scaler"].transform(_feat_now.iloc[[-1]][_5m_result["features"]].values)
+            _ret_now = float(_5m_result["model"].predict(_X_now)[0])
+            _close_now = float((df["close"] if "close" in df.columns else df["Close"]).iloc[-1])
+            _price_tgt = _close_now * (1 + _ret_now)
+            _sig_now = "BUY" if _ret_now > _total_cost_pct * 2 else ("SELL" if _ret_now < -_total_cost_pct * 2 else "HOLD")
+            _m4.metric("HF Signal",     _sig_now, f"{_ret_now*100:+.3f}%")
+            _sig_col5 = {"BUY": t["green"], "SELL": t["red"]}.get(_sig_now, t["amber"])
+            st.markdown(f"""
+<div style="background:{_sig_col5}18;border:1px solid {_sig_col5}44;border-radius:5px;
+  padding:10px 14px;font-family:IBM Plex Mono;font-size:11px;margin:8px 0">
+  <b style="color:{_sig_col5}">{_sig_now}</b> &nbsp;·&nbsp;
+  Predicted {_ret_now*100:+.3f}% over next {_5m_h} bar(s) &nbsp;·&nbsp;
+  Target: ${_price_tgt:,.4f} &nbsp;·&nbsp;
+  Cost hurdle: {_hurdle_pct:.3f}%
+  {"&nbsp;·&nbsp;<b style='color:"+t['green']+"'>✓ Clears cost hurdle</b>" if abs(_ret_now)*100 > _hurdle_pct else "&nbsp;·&nbsp;<b style='color:"+t['red']+"'>✗ Below cost hurdle — no trade</b>"}
+</div>""", unsafe_allow_html=True)
+    except Exception:
+        _m4.metric("HF Signal", "?")
+
+    # ── OOS Performance Chart ─────────────────────────────────────────────────
+    if len(_oos_pred) > 5 and len(_oos_act) > 5 and PLOTLY_OK:
+        try:
+            _oos_dt = pd.to_datetime(_oos_dates)
+            _pnl_arr = np.where(_oos_pred > _total_cost_pct, _oos_act,
+                        np.where(_oos_pred < -_total_cost_pct, -_oos_act, 0)) - _total_cost_pct
+            _cum_pnl = np.cumsum(_pnl_arr) * 100
+
+            _fig5 = go.Figure()
+            _fig5.add_trace(go.Scatter(
+                x=_oos_dt, y=_cum_pnl, name="Cumulative P&L (after costs)",
+                line=dict(color=t["blue"], width=2),
+                fill="tozeroy",
+                fillcolor=f"rgba(75,159,255,0.08)" if not light_mode else "rgba(21,85,162,0.06)",
+            ))
+            _fig5.add_hline(y=0, line_color=t["border"], line_width=1)
+            _lay5 = _plotly_base(t, "HF Model OOS Cumulative P&L (after costs, after hurdle)", height=280)
+            _lay5["yaxis"] = {**_lay5.get("yaxis", {}), "title": dict(text="Cum. P&L %", font=dict(size=9)), "side": "right"}
+            _fig5.update_layout(**_lay5)
+            st.plotly_chart(_fig5, use_container_width=True, config=dict(displayModeBar=False))
+
+            # Feature importance
+            _feat_imp5 = _5m_result.get("feat_imp", {})
+            if _feat_imp5:
+                _sorted5 = sorted(_feat_imp5.items(), key=lambda x: x[1], reverse=True)[:12]
+                _f_labels = [k.replace("_", " ").title() for k, _ in _sorted5]
+                _f_vals   = [v for _, v in _sorted5]
+                _fig5fi = go.Figure(go.Bar(
+                    x=_f_vals, y=_f_labels, orientation="h",
+                    marker_color=t["amber"], opacity=0.85,
+                ))
+                _lay5fi = _plotly_base(t, "HF Feature Importance (Top 12)", height=320)
+                _lay5fi["yaxis"] = {**_lay5fi.get("yaxis", {}), "autorange": "reversed"}
+                _fig5fi.update_layout(**_lay5fi)
+                st.plotly_chart(_fig5fi, use_container_width=True, config=dict(displayModeBar=False))
+        except Exception:
+            pass
+
+    st.markdown(f"""
+<div style="font-family:IBM Plex Mono;font-size:9px;color:{t['text_mute']};
+  padding:8px 12px;background:{t['surface']};border-radius:4px;border-left:3px solid {t['amber']};
+  margin-top:10px;line-height:1.7">
+⚠️ <b style="color:{t['amber']}">5-MIN TRADING REALITY CHECK:</b>
+Annual cost drag at {_trades_day} trades/day = <b>{_annual_drag:.0f}%</b>.
+Only trade when signal exceeds <b>{_hurdle_pct:.3f}%</b> (2× cost hurdle).
+Best results: liquid instruments (BTC, ETH, major FX) with tight spreads.
+Paper trade for 3–6 months before committing real capital.
+</div>""", unsafe_allow_html=True)

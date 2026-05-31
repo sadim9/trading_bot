@@ -954,6 +954,12 @@ try:
 except ImportError:
     go = None
 
+try:
+    import requests as _requests_mod
+    REQUESTS_OK = True
+except ImportError:
+    REQUESTS_OK = False
+
 # ── Session state ──────────────────────────────────────────────────────────────
 # Saved defaults override config defaults so the user's last saved ticker is
 # restored on every page refresh (fix: previously _def_symbol was ignored here).
@@ -1065,9 +1071,27 @@ def _load(symbol, interval, period, source, force=False, crypto_limit=500):
         if df is not None and len(df) >= 2:
             _DATA_CACHE[key] = (df, None, now)
             return df, None
-        last_err = f"{source} returned 0 usable bars for {symbol}"
+        last_err = f"TradingView returned no data for {symbol}" + (f" on {_tv_exch}" if _tv_exch else "")
     except Exception as e:
         last_err = str(e)
+
+    # ── Tier 1b: TradingView auto-detect fallback (if user-specified exchange failed) ─
+    if source == "tradingview" and _tv_exch is not None:
+        try:
+            df = load_data(symbol, interval=interval, period=period,
+                           source=source, crypto_limit=crypto_limit,
+                           twelvedata_api_key=_td_key, exchange=None)
+            if df is not None and len(df) >= 2:
+                warn = (
+                    f"Exchange '{_tv_exch}' returned no data for {symbol} — "
+                    f"loaded with auto-detected exchange instead. "
+                    f"Check: symbol format (Binance: BTCUSDT), internet "
+                    f"or try source = yfinance / sample."
+                )
+                _DATA_CACHE[key] = (df, warn, now)
+                return df, warn
+        except Exception as e2:
+            last_err += f" | auto-detect also failed: {e2}"
 
     # ── Tier 2: fallbacks ─────────────────────────────────────────
     _sym_up = symbol.upper()
@@ -1162,8 +1186,15 @@ _tabs_html = '<div class="qt-ticker-tabs">'
 for _t in _pinned:
     _td   = _tc.get(_t, {})
     _sig  = _td.get("signal", "")
-    _px   = _td.get("close_price", 0)
-    _chg  = _td.get("chg_pct", 0)
+    # For the active ticker, always use live session df for price accuracy
+    if _t == _active and st.session_state.df is not None and len(st.session_state.df) > 1:
+        _df_tab = st.session_state.df
+        _px     = float(_df_tab["Close"].iloc[-1])
+        _chg    = float((_df_tab["Close"].iloc[-1] / _df_tab["Close"].iloc[-2] - 1) * 100)
+        _sig    = st.session_state.rec.signal if st.session_state.rec else _sig
+    else:
+        _px   = _td.get("close_price", 0)
+        _chg  = _td.get("chg_pct", 0)
     _sig_cls  = {"BUY":"buy","SELL":"sell","HOLD":"hold"}.get(_sig, "none")
     _sig_txt  = _sig if _sig else "···"
     _active_cls = " active" if _t == _active else ""
@@ -1220,6 +1251,13 @@ if _n_pinned > 0:
                     st.session_state.period        = _saved.get("period",   st.session_state.period)
                     st.session_state.strategy_mode = _saved.get("strategy_mode", st.session_state.strategy_mode)
                     st.session_state.tz_offset_hours = float(_saved.get("tz_offset_hours", st.session_state.get("tz_offset_hours", 3.0)))
+                    # Restore TV exchange — set session state before widgets render
+                    if "_tv_exchange" in _saved:
+                        st.session_state["_tv_exchange"] = _saved["_tv_exchange"]
+                    if "_tv_exchange_custom" in _saved:
+                        st.session_state["_tv_exchange_custom"] = _saved["_tv_exchange_custom"]
+                    if "_tv_exchange_override" in _saved:
+                        st.session_state["_tv_exchange_override"] = _saved["_tv_exchange_override"]
                 elif _cached.get("df") is not None:
                     # Fall back to runtime cache if no saved settings
                     st.session_state.df       = _cached["df"]
@@ -1287,11 +1325,14 @@ with st.container():
         _pts = st.session_state.get("pinned_ticker_settings", {})
         _saved_pts = _pts.get(_active_sym, {})
         _new_pts = {
-            "source":          src,
-            "interval":        ivl,
-            "period":          per,
-            "strategy_mode":   strategy_mode,
-            "tz_offset_hours": float(st.session_state.get("tz_offset_hours", 3.0)),
+            "source":              src,
+            "interval":            ivl,
+            "period":              per,
+            "strategy_mode":       strategy_mode,
+            "tz_offset_hours":     float(st.session_state.get("tz_offset_hours", 3.0)),
+            "_tv_exchange":        st.session_state.get("_tv_exchange", "Auto-detect"),
+            "_tv_exchange_custom": st.session_state.get("_tv_exchange_custom", ""),
+            "_tv_exchange_override": st.session_state.get("_tv_exchange_override"),
         }
         if _saved_pts != _new_pts:
             _pts[_active_sym] = _new_pts
@@ -1310,11 +1351,14 @@ with st.container():
             # Save full toolbar settings for this pin so they restore on click
             _pin_settings = st.session_state.get("pinned_ticker_settings", {})
             _pin_settings[_new_sym] = {
-                "source":        src,
-                "interval":      ivl,
-                "period":        per,
-                "strategy_mode": strategy_mode,
-                "tz_offset_hours": float(st.session_state.get("tz_offset_hours", 3.0)),
+                "source":              src,
+                "interval":            ivl,
+                "period":              per,
+                "strategy_mode":       strategy_mode,
+                "tz_offset_hours":     float(st.session_state.get("tz_offset_hours", 3.0)),
+                "_tv_exchange":        st.session_state.get("_tv_exchange", "Auto-detect"),
+                "_tv_exchange_custom": st.session_state.get("_tv_exchange_custom", ""),
+                "_tv_exchange_override": st.session_state.get("_tv_exchange_override"),
             }
             st.session_state["pinned_ticker_settings"] = _pin_settings
             save_settings()
@@ -1657,7 +1701,12 @@ _fetch_t = datetime.fromtimestamp(st.session_state.last_refresh).strftime("%H:%M
 # Check data age: last bar timestamp vs now
 _last_bar_ts   = df.index[-1] if len(df) > 0 else None
 _data_age_hrs  = (datetime.now() - _last_bar_ts.to_pydatetime().replace(tzinfo=None)).total_seconds() / 3600 if _last_bar_ts is not None else 999
-_data_stale    = _data_age_hrs > 2   # data older than 2 hours is stale
+# Stale threshold depends on interval: daily bars are always 24h+ old, that's normal
+_stale_hrs_map = {
+    "1m": 0.1, "5m": 0.2, "15m": 0.4, "30m": 0.75,
+    "1h": 4, "2h": 8, "4h": 14, "1d": 36, "1wk": 220,
+}
+_data_stale    = _data_age_hrs > _stale_hrs_map.get(ivl, 4)
 _status_cls    = "qt-status-stale" if _stale or _data_stale else "qt-status-live"
 # Shift last bar timestamp to user's local timezone for display
 _tz_offset_h = float(st.session_state.get("tz_offset_hours", 3.0))
@@ -1677,7 +1726,7 @@ st.markdown(f"""
   <span>FETCHED {_fetch_t} ({_age_s})</span>
   <span>LOCAL {_local_now().strftime("%H:%M:%S")} {_tz_str}</span>
   <span>{len(df)} BARS · {ivl}</span>
-  <span>{sym} · {src.upper()}</span>
+  <span>{sym} · {src.upper()}{f" · {st.session_state.get('_tv_exchange','AUTO')}" if src == "tradingview" else ""}</span>
   {f'<span style="color:var(--red)">DATA {_data_age_hrs:.0f}h OLD — click ⟳ LOAD</span>' if _data_stale else ""}
 </div>
 """, unsafe_allow_html=True)
@@ -2305,6 +2354,35 @@ with panel_col:
                     if _submitted:
                         _broker = st.session_state.get("active_broker", "paper")
                         st.info(f"Order queued: {rec.signal} {_qty:.2f}% via {_broker}. Configure broker in ⚙ ACCOUNTS tab.", icon="⚡")
+                        # Send Discord trade confirmation notification
+                        _dc_url = st.session_state.get("_discord_webhook_url", "")
+                        if _dc_url and _dc_url.startswith("https://discord.com/api/webhooks/") and REQUESTS_OK:
+                            try:
+                                import requests as _req
+                                _sig_emoji = "🟢" if rec.signal == "BUY" else "🔴"
+                                _lim_txt = f"\n💵 Limit Price: **${_limit_px:.4f}**" if _order_type == "Limit" and _limit_px else ""
+                                _discord_payload = {
+                                    "embeds": [{
+                                        "title": f"{_sig_emoji} TRADE ORDER — {rec.signal} {sym}",
+                                        "description": (
+                                            f"**{rec.signal}** signal submitted via {_broker.upper()}\n\n"
+                                            f"📊 Entry: **${rec.entry_price:.4f}**\n"
+                                            f"🛑 Stop Loss: **${rec.stop_loss:.4f}**\n"
+                                            f"🎯 Take Profit: **${rec.take_profit:.4f}**\n"
+                                            f"📦 Size: **{_qty:.2f}%** of capital\n"
+                                            f"📋 Order Type: **{_order_type}**{_lim_txt}\n"
+                                            f"💡 Confidence: **{rec.confidence_pct:.0f}%**\n"
+                                            f"⚖️ R:R Ratio: **{rr:.2f}:1**\n\n"
+                                            f"⚠️ *Analysis only — verify before executing real trades.*"
+                                        ),
+                                        "color": 0x00E676 if rec.signal == "BUY" else 0xFF5252,
+                                        "footer": {"text": "Apex Terminal — Trade Confirmation"},
+                                    }]
+                                }
+                                _req.post(_dc_url, json=_discord_payload, timeout=5)
+                                st.success("✅ Trade details sent to Discord!", icon="💬")
+                            except Exception as _dc_err:
+                                st.warning(f"Discord notification failed: {_dc_err}")
 
         # Log signal
         from utils.logger import TradeLogger
