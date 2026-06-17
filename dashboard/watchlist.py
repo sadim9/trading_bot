@@ -430,6 +430,17 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
             )
         st.session_state[cache_key]      = results
         st.session_state["wl_last_scan"] = time.time()
+
+        # Ensure every displayed symbol has an entry in watchlist_settings.json so
+        # the background worker picks it up even if the user never opened per-symbol
+        # settings.  Existing entries are left unchanged; only missing ones get defaults.
+        _cfg_changed = False
+        for _sym in symbols:
+            if _sym not in wl_cfg:
+                wl_cfg[_sym] = {"notify": True, "strategy": _STRATEGY_VALS[0]}
+                _cfg_changed = True
+        if _cfg_changed:
+            _save_watchlist_cfg(wl_cfg)
     else:
         results = cached
         age = int(time.time() - last_scan)

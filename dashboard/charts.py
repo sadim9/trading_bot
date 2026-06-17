@@ -141,27 +141,33 @@ _INTRADAY_INTERVALS = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h"}
 
 def _intraday_xrange(df: pd.DataFrame, interval: str) -> dict:
     """
-    For intraday intervals default the visible x-axis range to the last
-    trading day so the chart opens at day view. The full dataset remains
-    loaded so panning/dragging backwards reveals previous days.
+    Default the visible x-axis range so the chart doesn't open on ALL data.
 
-    Returns a dict to be spread into the xaxis kwargs (may be empty for
-    daily/weekly intervals where no default range is needed).
+    - Intraday (1m/5m/15m/1h/4h): show the last trading day.
+    - Daily (1d): show the last 30 calendar days.
+    - Weekly (1wk): show the last 26 weeks (~6 months).
+
+    The full dataset remains loaded so panning backwards reveals earlier data.
+    Returns a dict spread into xaxis kwargs; empty dict = no range restriction.
     """
-    if interval not in _INTRADAY_INTERVALS or len(df) < 2:
+    if len(df) < 2:
         return {}
     last_ts = df.index[-1]
-    # Last day boundary (midnight of the last bar's date)
     try:
-        day_start = pd.Timestamp(last_ts.date())
-        # Add tz offset so the visible window aligns with local midnight
-        first_ts  = df.index[0]
-        # Give 30-minute padding before first bar of the day
-        x0 = day_start - pd.Timedelta(minutes=30)
-        x1 = last_ts   + pd.Timedelta(hours=1)
-        return {"range": [x0, x1]}
+        if interval in _INTRADAY_INTERVALS:
+            day_start = pd.Timestamp(last_ts.date())
+            x0 = day_start - pd.Timedelta(minutes=30)
+            x1 = last_ts   + pd.Timedelta(hours=1)
+            return {"range": [x0, x1]}
+        if interval == "1d":
+            x0 = last_ts - pd.Timedelta(days=30)
+            return {"range": [x0, last_ts + pd.Timedelta(days=1)]}
+        if interval == "1wk":
+            x0 = last_ts - pd.Timedelta(weeks=26)
+            return {"range": [x0, last_ts + pd.Timedelta(days=7)]}
     except Exception:
-        return {}
+        pass
+    return {}
 
 
 def build_chart(
@@ -752,13 +758,16 @@ def build_chart(
                 ],
                 bgcolor=T["bg_panel"],
                 activecolor=T["grid"],
+                # Index of the button that appears highlighted on load.
+                # 6 = "1M" for daily; for intraday the xaxis range overrides this anyway.
+                active=6,
                 font=dict(color=T["text"], size=9, family="JetBrains Mono, monospace"),
                 x=0.0, y=1.01, xanchor="left",
             ),
             showspikes=True, spikemode="across", spikesnap="cursor",
             spikecolor=T["text_dim"], spikethickness=1, spikedash="dot",
-            # For intraday intervals, default to showing the last day of data.
-            # The full dataset is still loaded so the user can pan/drag backwards.
+            # Default visible range keeps chart from opening on ALL data.
+            # For intraday: last trading day. For 1d: last 30 days. For 1wk: last 26 weeks.
             **_intraday_xrange(df, interval),
         ),
         # Spike lines
