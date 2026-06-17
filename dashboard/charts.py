@@ -758,9 +758,6 @@ def build_chart(
                 ],
                 bgcolor=T["bg_panel"],
                 activecolor=T["grid"],
-                # Index of the button that appears highlighted on load.
-                # 6 = "1M" for daily; for intraday the xaxis range overrides this anyway.
-                active=6,
                 font=dict(color=T["text"], size=9, family="JetBrains Mono, monospace"),
                 x=0.0, y=1.01, xanchor="left",
             ),
