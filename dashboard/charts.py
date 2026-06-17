@@ -113,7 +113,7 @@ LIGHT_THEME = dict(
     mkv_entry    = "rgba(96,48,190,0.12)",
 )
 
-ROW_HEIGHTS = [0.52, 0.14, 0.18, 0.16]   # [candles, volume, rsi, macd]
+ROW_HEIGHTS = [0.44, 0.11, 0.14, 0.13, 0.18]  # [candles, vol, rsi, stoch_rsi, macd]
 
 
 def _support_resistance(df: pd.DataFrame, n_levels: int = 3) -> tuple[list, list]:
@@ -192,6 +192,10 @@ def build_chart(
     tz_offset_hours: float = 0.0,
     # Bar interval — used to set default x-axis range for intraday charts
     interval: str = "1d",
+    # Optional overlays / panels
+    show_vwap:        bool = True,   # VWAP line on intraday charts
+    show_session_sep: bool = True,   # vertical session-separator lines (intraday)
+    show_stoch_rsi:   bool = True,   # Stochastic RSI as 5th subplot
 ) -> "go.Figure":
     """
     Build the full institutional chart figure.
@@ -242,6 +246,18 @@ def build_chart(
                 for s in markov_signals
             ]
 
+    # ── VWAP computation (intraday only — resets each calendar day) ──────────
+    _vwap = None
+    if show_vwap and interval in _INTRADAY_INTERVALS and "Volume" in df.columns:
+        try:
+            _typical  = (df["High"] + df["Low"] + df["Close"]) / 3
+            _day_keys = df.index.normalize()
+            _cum_tpv  = (_typical * df["Volume"]).groupby(_day_keys).cumsum()
+            _cum_vol  = df["Volume"].groupby(_day_keys).cumsum()
+            _vwap     = _cum_tpv / _cum_vol.replace(0, float("nan"))
+        except Exception:
+            _vwap = None
+
     # ── MA Cross computation ──────────────────────────────────────────────────
     # Computed fresh from the sliced df so cross detection is accurate
     # Uses enough extra history so the warmup period is handled correctly
@@ -260,9 +276,9 @@ def build_chart(
 
     # ── Create subplot grid ───────────────────────────────────────────────────
     fig = make_subplots(
-        rows=4, cols=1,
+        rows=5, cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.01,   # tighter gap = more chart real estate
+        vertical_spacing=0.008,  # tighter gap = more chart real estate
         row_heights=ROW_HEIGHTS,
         subplot_titles=None,     # no titles = no extra height allocation
     )
@@ -404,6 +420,15 @@ def build_chart(
             opacity=0.6,
         ), row=1, col=1)
 
+    # ── VWAP line ─────────────────────────────────────────────────────────────
+    if _vwap is not None:
+        fig.add_trace(go.Scatter(
+            x=df.index, y=_vwap,
+            name="VWAP",
+            line=dict(color="#E040FB", width=1.6, dash="dash"),
+            hovertemplate="VWAP: %{y:.4f}<extra></extra>",
+        ), row=1, col=1)
+
     # ── Support & Resistance ──────────────────────────────────────────────────
     supports, resistances = _support_resistance(df, n_levels=2)
     x_range = [df.index[0], df.index[-1]]
@@ -414,10 +439,11 @@ def build_chart(
             line=dict(color=T["sr_support"], width=1.2, dash="dot"),
             row=1, col=1)
         fig.add_annotation(
-            x=x_range[1], y=lvl, text=f"S {lvl:.2f}",
-            font=dict(color=T["candle_up"], size=10),
-            showarrow=False, xanchor="right",
-            row=1, col=1)
+            xref="paper", x=1.002, yref="y", y=lvl,
+            text=f"S {lvl:.2f}",
+            font=dict(color=T["candle_up"], size=9, family="JetBrains Mono, monospace"),
+            bgcolor=T["bg_panel"], bordercolor=T["candle_up"], borderwidth=1,
+            showarrow=False, xanchor="left")
 
     for lvl in resistances:
         fig.add_shape(type="line",
@@ -425,10 +451,11 @@ def build_chart(
             line=dict(color=T["sr_resist"], width=1.2, dash="dot"),
             row=1, col=1)
         fig.add_annotation(
-            x=x_range[1], y=lvl, text=f"R {lvl:.2f}",
-            font=dict(color=T["candle_dn"], size=10),
-            showarrow=False, xanchor="right",
-            row=1, col=1)
+            xref="paper", x=1.002, yref="y", y=lvl,
+            text=f"R {lvl:.2f}",
+            font=dict(color=T["candle_dn"], size=9, family="JetBrains Mono, monospace"),
+            bgcolor=T["bg_panel"], bordercolor=T["candle_dn"], borderwidth=1,
+            showarrow=False, xanchor="left")
 
     # ── Entry / SL / TP lines ────────────────────────────────────────────────
     if entry_price and signal_type in ("BUY", "SELL"):
@@ -449,6 +476,22 @@ def build_chart(
                     bgcolor=T["bg_panel"],
                     bordercolor=color, borderwidth=1,
                     row=1, col=1)
+
+    # ── Session separator vertical lines (intraday only) ─────────────────────
+    if show_session_sep and interval in _INTRADAY_INTERVALS:
+        try:
+            _prev_date = None
+            for _ts in df.index:
+                _d = _ts.normalize()
+                if _prev_date is not None and _d != _prev_date:
+                    fig.add_vline(
+                        x=str(_ts),
+                        line=dict(color=T["text_dim"], width=0.8, dash="dot"),
+                        opacity=0.5,
+                    )
+                _prev_date = _d
+        except Exception:
+            pass
 
     # ── Historical trade signals (arrows) ────────────────────────────────────
     if signals:
@@ -574,6 +617,15 @@ def build_chart(
         line=dict(color=_px_col, width=0.8, dash="dot"),
     )
 
+    # ── Watermark ─────────────────────────────────────────────────────────────
+    _wm_color = "rgba(255,255,255,0.03)" if not light_mode else "rgba(0,0,0,0.04)"
+    fig.add_annotation(
+        xref="paper", yref="paper", x=0.5, y=0.72,
+        text=symbol,
+        font=dict(size=72, color=_wm_color, family="JetBrains Mono, monospace"),
+        showarrow=False, xanchor="center", yanchor="middle",
+    )
+
     # ── ROW 2: Volume — gradient opacity based on relative vol ────────────────
     _vol_mean = df["Volume"].mean()
     _vol_high = [v >= _vol_mean * 1.5 for v in df["Volume"]]
@@ -671,7 +723,38 @@ def build_chart(
     except Exception:
         pass  # Volume profile is optional
 
-    # ── ROW 4: MACD with divergence colouring ────────────────────────────────
+    # ── ROW 4: Stochastic RSI ─────────────────────────────────────────────────
+    if show_stoch_rsi and "rsi" in df.columns:
+        try:
+            _rsi_s    = df["rsi"].fillna(50)
+            _stk_per  = 14
+            _rsi_lo   = _rsi_s.rolling(_stk_per).min()
+            _rsi_hi   = _rsi_s.rolling(_stk_per).max()
+            _raw_k    = (_rsi_s - _rsi_lo) / (_rsi_hi - _rsi_lo + 1e-9) * 100
+            _k_line   = _raw_k.rolling(3).mean()
+            _d_line   = _k_line.rolling(3).mean()
+
+            fig.add_hrect(y0=80, y1=100, row=4, col=1, fillcolor=T["rsi_ob"], line_width=0)
+            fig.add_hrect(y0=0,  y1=20,  row=4, col=1, fillcolor=T["rsi_os"], line_width=0)
+            fig.add_trace(go.Scatter(
+                x=df.index, y=_k_line,
+                name="Stoch %K",
+                line=dict(color="#60A5FA", width=1.6),
+                hovertemplate="%K: %{y:.1f}<extra></extra>",
+            ), row=4, col=1)
+            fig.add_trace(go.Scatter(
+                x=df.index, y=_d_line,
+                name="Stoch %D",
+                line=dict(color="#FB923C", width=1.2, dash="dot"),
+                hovertemplate="%D: %{y:.1f}<extra></extra>",
+            ), row=4, col=1)
+            for _lvl, _col in [(80, T["candle_dn"]), (50, T["text_dim"]), (20, T["candle_up"])]:
+                fig.add_hline(y=_lvl, row=4, col=1,
+                              line=dict(color=_col, width=0.8, dash="dot"))
+        except Exception:
+            pass
+
+    # ── ROW 5: MACD with divergence colouring ────────────────────────────────
     if all(c in df.columns for c in ["macd", "macd_signal", "macd_hist"]):
         hist   = df["macd_hist"]
         # Colour: brightening green/red when momentum is increasing
@@ -689,20 +772,20 @@ def build_chart(
             marker=dict(color=hist_colors, line=dict(width=0)),
             showlegend=False,
             hovertemplate="Hist: %{y:.5f}<extra></extra>",
-        ), row=4, col=1)
+        ), row=5, col=1)
         fig.add_trace(go.Scatter(
             x=df.index, y=df["macd"],
             name="MACD",
             line=dict(color=T["macd_line"], width=1.6),
             hovertemplate="MACD: %{y:.5f}<extra></extra>",
-        ), row=4, col=1)
+        ), row=5, col=1)
         fig.add_trace(go.Scatter(
             x=df.index, y=df["macd_signal"],
             name="Signal",
             line=dict(color=T["macd_signal"], width=1.2),
             hovertemplate="Signal: %{y:.5f}<extra></extra>",
-        ), row=4, col=1)
-        fig.add_hline(y=0, row=4, col=1,
+        ), row=5, col=1)
+        fig.add_hline(y=0, row=5, col=1,
                       line=dict(color=T["text_dim"], width=0.8))
 
     # ── Global dark styling ───────────────────────────────────────────────────
@@ -736,7 +819,7 @@ def build_chart(
         ),
         dragmode="pan",
         xaxis_rangeslider_visible=False,
-        height=860,
+        height=980,
         # Mobile touch support — allow pinch-to-zoom and two-finger pan
         modebar=dict(orientation="v"),
         # uirevision: keeps zoom/pan state across Streamlit reruns.
@@ -782,20 +865,20 @@ def build_chart(
         linecolor=T["grid"],
     )
 
-    for i in range(1, 5):
-        # Build timezone label for x-axis title on the bottom row
-        if tz_offset_hours == 0:
-            _tz_label = "UTC"
-        else:
-            _tz_sign  = "+" if tz_offset_hours >= 0 else ""
-            _tz_label = f"UTC{_tz_sign}{tz_offset_hours:g}"
+    if tz_offset_hours == 0:
+        _tz_label = "UTC"
+    else:
+        _tz_sign  = "+" if tz_offset_hours >= 0 else ""
+        _tz_label = f"UTC{_tz_sign}{tz_offset_hours:g}"
+
+    for i in range(1, 6):
         fig.update_xaxes(
             axis_style,
             row=i, col=1,
-            showticklabels=(i == 4),
+            showticklabels=(i == 5),
             automargin=False,
             fixedrange=False,
-            title_text=_tz_label if i == 4 else None,
+            title_text=_tz_label if i == 5 else None,
             title_font=dict(size=9, color=T["text_dim"]),
             tickformatstops=[
                 dict(dtickrange=[None, 60000],    value="%H:%M:%S"),
@@ -811,8 +894,10 @@ def build_chart(
             fixedrange=False,
         )
 
-    # RSI y-axis fixed range
-    fig.update_yaxes(range=[0, 100], row=3, col=1, fixedrange=True)  # RSI fixed Y is intentional
+    # RSI and Stochastic RSI y-axes: fixed 0-100 range
+    fig.update_yaxes(range=[0, 100], row=3, col=1, fixedrange=True)
+    fig.update_yaxes(range=[0, 100], row=4, col=1, fixedrange=True,
+                     tickvals=[20, 50, 80], ticktext=["20", "50", "80"])
 
     # Rangebreaks: only apply weekend gaps for traditional stocks.
     # Crypto (USDT pairs, BTC-USD etc.) trades 24/7 — no weekend gaps.
