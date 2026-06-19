@@ -689,8 +689,10 @@ def build_chart(
             fig.add_hline(y=lvl, row=3, col=1,
                           line=dict(color=col, width=0.8, dash="dot"))
 
-    # ── ROW 3.5: Volume Profile (horizontal bars on price axis) ────────────
-    # Group volume into price buckets and show as horizontal bars overlaid on price
+    # ── ROW 3.5: Volume Profile (horizontal bars pinned to right edge) ──────
+    # Uses xref="paper" so bars are anchored to plot-width fraction rather than
+    # the time axis — this prevents the shared x-axes from expanding to fit the
+    # shapes and pushing sub-chart traces out of alignment.
     try:
         _vp_n_bins = 20
         _vp_close  = df["Close"].values
@@ -702,23 +704,25 @@ def build_chart(
             _bin_idx = np.searchsorted(_vp_bins, _px_v, side="right") - 1
             _bin_idx = int(np.clip(_bin_idx, 0, _vp_n_bins - 1))
             _vp_vols[_bin_idx] += _vol_v
-        # Normalise to fraction of price range for overlay
         _vp_max  = _vp_vols.max()
         _vp_norm = (_vp_vols / _vp_max) if _vp_max > 0 else _vp_vols
-        _vp_width = (df.index[-1] - df.index[0]) * 0.08  # 8% of x range
-        _x_right  = df.index[-1]
+        _vp_bar_width = 0.08  # max 8% of plot width in paper coords
+        _bin_h = (_vp_bins[1] - _vp_bins[0]) / 2
         for _mid, _norm in zip(_vp_mids, _vp_norm):
-            if _norm > 0.02:  # skip tiny bars
-                _is_upper = _mid >= _vp_mids[len(_vp_mids)//2]
+            if _norm > 0.02:
+                _is_upper = _mid >= _vp_mids[len(_vp_mids) // 2]
                 _vp_color = "rgba(38,166,154,0.25)" if _is_upper else "rgba(239,83,80,0.25)"
                 fig.add_shape(
                     type="rect",
-                    x0=_x_right, x1=_x_right + _vp_width * _norm,
-                    y0=_mid - (_vp_bins[1] - _vp_bins[0]) / 2,
-                    y1=_mid + (_vp_bins[1] - _vp_bins[0]) / 2,
+                    # x anchored to paper (0–1 = left–right edge of plot area)
+                    xref="paper", yref="y",
+                    x0=1.0 - _vp_bar_width * _norm,
+                    x1=1.0,
+                    y0=_mid - _bin_h,
+                    y1=_mid + _bin_h,
                     fillcolor=_vp_color,
                     line=dict(width=0),
-                    row=1, col=1,
+                    layer="below",
                 )
     except Exception:
         pass  # Volume profile is optional
