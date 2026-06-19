@@ -126,6 +126,19 @@ html, body, [class*="css"], .stApp {
 #MainMenu, footer, header, [data-testid="stDecoration"],
 [data-testid="stToolbar"], .reportview-container .main .block-container > div:first-child { visibility: hidden; height: 0; }
 
+/* ── Prevent chart/content dimming during auto-refresh reruns ── */
+.stApp [data-testid="stPlotlyChart"],
+.stApp [data-testid="element-container"],
+.stApp .element-container,
+.stApp iframe {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  transition: none !important;
+}
+/* Suppress Streamlit's running-state overlay and spinner */
+[data-testid="stStatusWidget"] { display: none !important; }
+.stSpinner > div { display: none !important; }
+
 /* ── Metrics ── */
 [data-testid="metric-container"] {
   background: var(--bg-card) !important;
@@ -1150,7 +1163,8 @@ def _aggregator(cfg_id, strategy_mode: str = "multi"):
 # ═══════════════════════════════════════════════════════════════════════════════
 #  HEADER BAR
 # ═══════════════════════════════════════════════════════════════════════════════
-now_str   = _local_now().strftime("%Y-%m-%d  %H:%M:%S")
+_tz_offset_for_clock = float(st.session_state.get("tz_offset_hours", 3.0))
+_tz_offset_ms_for_clock = int(_tz_offset_for_clock * 3600 * 1000)
 src_label = {
     "kraken":     "KRAKEN — REAL-TIME",
     "kucoin":     "KUCOIN — REAL-TIME",
@@ -1168,10 +1182,25 @@ st.markdown(f"""
   <div class="qt-header-right">
     <span><span class="qt-live-dot"></span>LIVE</span>
     <span>SOURCE: {src_label}</span>
-    <span>⏱ {now_str}</span>
+    <span>⏱ <span id="apex-live-clock">--:--:--</span></span>
     <span>⚠️ ANALYSIS ONLY</span>
   </div>
 </div>
+<script>
+(function() {{
+  var tzOffsetMs = {_tz_offset_ms_for_clock};
+  function tick() {{
+    var now = new Date(Date.now() + tzOffsetMs);
+    var h = String(now.getUTCHours()).padStart(2,'0');
+    var m = String(now.getUTCMinutes()).padStart(2,'0');
+    var s = String(now.getUTCSeconds()).padStart(2,'0');
+    var el = document.getElementById('apex-live-clock');
+    if (el) el.textContent = h + ':' + m + ':' + s;
+  }}
+  tick();
+  setInterval(tick, 1000);
+}})();
+</script>
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1723,6 +1752,7 @@ st.markdown(kpi_html, unsafe_allow_html=True)
 _age   = time.time() - st.session_state.last_refresh
 _stale = _age > max(rsec*2, 120)
 _age_s = f"{int(_age)}s ago" if _age < 120 else f"{int(_age/60)}m ago"
+_fetch_epoch_ms = int(st.session_state.last_refresh * 1000)
 _fetch_t = datetime.fromtimestamp(st.session_state.last_refresh).strftime("%H:%M:%S")
 # Check data age: last bar timestamp vs now
 _last_bar_ts   = df.index[-1] if len(df) > 0 else None
@@ -1749,12 +1779,33 @@ st.markdown(f"""
 <div class="qt-status-bar">
   <span class="{_status_cls}">● {_status_label}</span>
   <span>LAST BAR {_last_bar_str} ({_tz_str})</span>
-  <span>FETCHED {_fetch_t} ({_age_s})</span>
-  <span>LOCAL {_local_now().strftime("%H:%M:%S")} {_tz_str}</span>
+  <span>FETCHED {_fetch_t} (<span id="apex-fetch-age">--</span>)</span>
+  <span>LOCAL <span id="apex-local-clock">--:--:--</span> {_tz_str}</span>
   <span>{len(df)} BARS · {ivl}</span>
   <span>{sym} · {src.upper()}{f" · {(st.session_state.get('_tv_exchange_override') or st.session_state.get('_tv_exchange') or 'AUTO').upper()}" if src == "tradingview" else ""}</span>
   {f'<span style="color:var(--red)">DATA {_data_age_hrs:.0f}h OLD — click ⟳ LOAD</span>' if _data_stale else ""}
 </div>
+<script>
+(function() {{
+  var tzOffsetMs = {_tz_offset_ms_for_clock};
+  var fetchEpochMs = {_fetch_epoch_ms};
+  function tickStatus() {{
+    var now = new Date();
+    var local = new Date(now.getTime() + tzOffsetMs);
+    var h = String(local.getUTCHours()).padStart(2,'0');
+    var m = String(local.getUTCMinutes()).padStart(2,'0');
+    var s = String(local.getUTCSeconds()).padStart(2,'0');
+    var cl = document.getElementById('apex-local-clock');
+    if (cl) cl.textContent = h + ':' + m + ':' + s;
+    var ageSec = Math.floor((now.getTime() - fetchEpochMs) / 1000);
+    var ageStr = ageSec < 120 ? ageSec + 's ago' : Math.floor(ageSec / 60) + 'm ago';
+    var ag = document.getElementById('apex-fetch-age');
+    if (ag) ag.textContent = ageStr;
+  }}
+  tickStatus();
+  setInterval(tickStatus, 1000);
+}})();
+</script>
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2511,23 +2562,16 @@ with panel_col:
 # Broker panel
 render_broker_panel(df=df, rec=rec, ma_cross_result=st.session_state.ma_cross_result)
 
-# Auto-refresh: only trigger after the page has fully loaded at least once
-# (last_refresh > 0 ensures we never rerun on first render before data loads).
-# rsec comes from the selectbox widget; clamp to minimum 10s as a safety net.
+# Auto-refresh: use streamlit-autorefresh for autonomous, seamless reruns.
+# Falls back to the legacy manual-trigger approach if the package is not installed.
 _rsec_safe = max(rsec, 10) if rsec else 30
 if st.session_state.auto_refresh and st.session_state.last_refresh > 0:
-    elapsed   = time.time() - st.session_state.last_refresh
-    remaining = max(0, _rsec_safe - elapsed)
-    if remaining <= 0:
-        # Clear caches so fresh data is fetched
-        _DATA_CACHE.clear(); clear_cache(); clear_ingestion_cache(); clear_commodity_cache()
-        st.session_state.df = None  # force re-fetch on next render
-        st.rerun()
-    else:
-        # Show a subtle countdown that doesn't interrupt the user
-        st.markdown(
-            f'<div style="position:fixed;bottom:8px;right:12px;font-family:var(--mono);'
-            f'font-size:9px;color:var(--text-mute);z-index:999;letter-spacing:.06em">'
-            f'AUTO ⟳ {int(remaining)}s</div>',
-            unsafe_allow_html=True,
-        )
+    try:
+        from streamlit_autorefresh import st_autorefresh
+        st_autorefresh(interval=_rsec_safe * 1000, limit=None, key="apex_autorefresh")
+    except ImportError:
+        # Fallback: trigger rerun when interval has elapsed.
+        # Does NOT clear df or caches so charts don't flash blank.
+        elapsed = time.time() - st.session_state.last_refresh
+        if elapsed >= _rsec_safe:
+            st.rerun()
