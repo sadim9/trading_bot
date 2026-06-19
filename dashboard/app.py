@@ -126,16 +126,13 @@ html, body, [class*="css"], .stApp {
 #MainMenu, footer, header, [data-testid="stDecoration"],
 [data-testid="stToolbar"], .reportview-container .main .block-container > div:first-child { visibility: hidden; height: 0; }
 
-/* ── Prevent chart/content dimming during auto-refresh reruns ── */
-.stApp [data-testid="stPlotlyChart"],
-.stApp [data-testid="element-container"],
-.stApp .element-container,
-.stApp iframe {
+/* ── Prevent Plotly chart dimming during auto-refresh reruns ── */
+/* Scope tightly to plotly charts only — do NOT touch .element-container
+   as Streamlit uses CSS on those to hide inactive tab panel content. */
+[data-testid="stPlotlyChart"] {
   opacity: 1 !important;
-  pointer-events: auto !important;
-  transition: none !important;
 }
-/* Suppress Streamlit's running-state overlay and spinner */
+/* Suppress Streamlit's running-state spinner (not the tab CSS) */
 [data-testid="stStatusWidget"] { display: none !important; }
 .stSpinner > div { display: none !important; }
 
@@ -1793,12 +1790,17 @@ st.markdown(f"""
 #  MAIN LAYOUT — chart left, panel right
 # ═══════════════════════════════════════════════════════════════════════════════
 chart_col, panel_col = st.columns([7.5, 2.5], gap="small")
+# Tracks which tab the user is on so panel_col can adapt.
+# Streamlit ≥1.31 uses lazy tab rendering — only the active tab's Python
+# code executes, so this session state is reliably set by the active tab only.
+st.session_state.setdefault("_active_tab", "chart")
 
 # ──────────────── LEFT: CHART AREA ────────────────────────────────────────────
 with chart_col:
     tab_chart, tab_bt, tab_mkv, tab_ml, tab_log, tab_acct, tab_wl = st.tabs(["CHART", "BACKTEST", "⛓ MARKOV", "🤖 ML", "LOG", "⚙ ACCOUNTS", "📊 WATCHLIST"])
 
     with tab_chart:
+        st.session_state["_active_tab"] = "chart"
         # Chart controls — 2-row layout to prevent label overlap
         _ms = int(st.session_state.get("ma_short", 9))
         _ml = int(st.session_state.get("ma_long", 21))
@@ -1875,6 +1877,7 @@ with chart_col:
                 ))
 
     with tab_bt:
+        st.session_state["_active_tab"] = "backtest"
         # ── Backtest controls ────────────────────────────────────────────
         bl, br = st.columns([3, 1])
         with br:
@@ -2015,6 +2018,7 @@ with chart_col:
                 )
 
     with tab_mkv:
+        st.session_state["_active_tab"] = "markov"
         try:
             _mkv_df = st.session_state.get("df")
             if _mkv_df is None or len(_mkv_df) < 40:
@@ -2031,6 +2035,7 @@ with chart_col:
             st.error(f"Markov tab error: {_mkv_err}", icon="⚠️")
 
     with tab_ml:
+        st.session_state["_active_tab"] = "ml"
         try:
             render_ml_tab(
                 df         = st.session_state.get("df"),
@@ -2044,6 +2049,7 @@ with chart_col:
             st.code(traceback.format_exc(), language="python")
 
     with tab_log:
+        st.session_state["_active_tab"] = "log"
         try:
             # ── Signal Alert Log (BUY/SELL tracking with planned trade amount)
             from dashboard.alert_log import render_alert_log
@@ -2071,6 +2077,7 @@ with chart_col:
             st.error(f"Log tab error: {_log_err}", icon="⚠️")
 
     with tab_acct:
+        st.session_state["_active_tab"] = "accounts"
         try:
             render_account_panel()
         except Exception as _acct_err:
@@ -2079,6 +2086,7 @@ with chart_col:
             st.code(_tb.format_exc(), language="python")
 
     with tab_wl:
+        st.session_state["_active_tab"] = "watchlist"
         try:
             st.markdown(
                 '''<div style="font-family:var(--mono);font-size:11px;color:var(--text-sec);
@@ -2106,10 +2114,16 @@ with chart_col:
             st.code(_tb.format_exc(), language="python")
 
 # ──────────────── RIGHT: SIGNAL PANEL ─────────────────────────────────────────
+# Only render signal panel on tabs where it's contextually relevant.
+# On LOG / ACCOUNTS / WATCHLIST tabs the panel takes space without adding value.
+_signal_tabs = {"chart", "backtest", "markov", "ml"}
+_show_panel  = st.session_state.get("_active_tab", "chart") in _signal_tabs
 with panel_col:
 
     # ── Signal card ───────────────────────────────────────────────────────────
-    if rec:
+    if not _show_panel:
+        pass  # panel hidden on LOG / ACCOUNTS / WATCHLIST tabs
+    elif rec:
         sig   = rec.signal
         score = rec.composite_score
         conf  = rec.confidence_pct
