@@ -914,6 +914,23 @@ input::placeholder, textarea::placeholder { color: #7090AE !important; }
 ::-webkit-scrollbar-track { background: #F2F6FC; }
 ::-webkit-scrollbar-thumb { background: #879EC2; }
 
+/* ── Light mode: buttons ── */
+[data-testid="baseButton-primary"] {
+  background: #1555A2 !important;
+  color: #FFFFFF !important;
+}
+[data-testid="baseButton-primary"]:hover { opacity: 0.88 !important; }
+[data-testid="baseButton-secondary"] {
+  background: #FFFFFF !important;
+  border: 1px solid #879EC2 !important;
+  color: #0B1929 !important;
+}
+[data-testid="baseButton-secondary"]:hover {
+  background: #DBE4F5 !important;
+  border-color: #5278B0 !important;
+  color: #0B1929 !important;
+}
+
 /* ── Light mode: acct-section / account panel cards ── */
 .acct-section { background: #FFFFFF !important; border-color: #BDC9DC !important; }
 .acct-title   { color: #0B1929 !important; }
