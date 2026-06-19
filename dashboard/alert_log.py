@@ -52,6 +52,35 @@ def _ensure_log():
     return None
 
 
+_DEDUP_WINDOW_SECONDS = 120
+
+
+def _recently_logged(log_path: Path, symbol: str, signal: str) -> bool:
+    """Return True if the same symbol+signal was logged within the dedup window."""
+    try:
+        if not log_path.exists():
+            return False
+        with open(log_path, "r", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+        if not rows:
+            return False
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=_DEDUP_WINDOW_SECONDS)
+        for row in reversed(rows):
+            if row.get("symbol") == symbol and row.get("signal") == signal:
+                try:
+                    ts = datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00"))
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    if ts >= cutoff:
+                        return True
+                except Exception:
+                    pass
+                break
+    except Exception:
+        pass
+    return False
+
+
 def log_alert(
     symbol: str,
     signal: str,
@@ -70,6 +99,9 @@ def log_alert(
 
     log_path = _ensure_log()
     if log_path is None:
+        return
+
+    if _recently_logged(log_path, symbol, signal):
         return
 
     row = {

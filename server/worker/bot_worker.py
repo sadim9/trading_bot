@@ -188,6 +188,26 @@ async def run_signal_cycle(symbols: list, watchlist_cfg: dict, engine):
                 db.add(sig_rec)
                 log.info(f"  {symbol}: {rec.signal} score={rec.composite_score:.3f}")
 
+                # Persist to Signal Alert Log CSV (read by dashboard alert log tab)
+                if rec.signal in ("BUY", "SELL"):
+                    try:
+                        from dashboard.alert_log import log_alert
+                        log_alert(
+                            symbol         = symbol,
+                            signal         = rec.signal,
+                            price          = rec.entry_price,
+                            strategy_mode  = sym_mode,
+                            score          = rec.composite_score,
+                            confidence     = rec.confidence_pct,
+                            planned_amount = 0.0,
+                            entry_price    = rec.entry_price,
+                            stop_loss      = rec.stop_loss,
+                            take_profit    = rec.take_profit,
+                        )
+                        log.info(f"  {symbol}: alert logged to CSV")
+                    except Exception as _le:
+                        log.warning(f"  {symbol}: alert log write failed: {_le}")
+
                 # Send notifications
                 if (do_notify and engine is not None
                         and rec.signal in ("BUY", "SELL")
