@@ -126,13 +126,20 @@ html, body, [class*="css"], .stApp {
 #MainMenu, footer, header, [data-testid="stDecoration"],
 [data-testid="stToolbar"], .reportview-container .main .block-container > div:first-child { visibility: hidden; height: 0; }
 
-/* ── Prevent Plotly chart dimming during auto-refresh reruns ── */
-/* Scope tightly to plotly charts only — do NOT touch .element-container
-   as Streamlit uses CSS on those to hide inactive tab panel content. */
-[data-testid="stPlotlyChart"] {
+/* ── Prevent page from fading/dimming during Streamlit reruns ── */
+/* Streamlit sets opacity on PARENT containers during the running state.
+   Overriding opacity on child elements alone does not help because CSS
+   opacity is not overridable on children once a parent has opacity < 1.
+   We therefore target the top-level content containers. */
+[data-testid="stAppViewContainer"],
+[data-testid="stMain"],
+[data-testid="stMainBlockContainer"],
+.main .block-container,
+.block-container {
   opacity: 1 !important;
+  transition: none !important;
 }
-/* Suppress Streamlit's running-state spinner (not the tab CSS) */
+/* Suppress Streamlit's running-state widget/spinner overlays */
 [data-testid="stStatusWidget"] { display: none !important; }
 .stSpinner > div { display: none !important; }
 
@@ -912,12 +919,24 @@ input::placeholder, textarea::placeholder { color: #7090AE !important; }
 ::-webkit-scrollbar-thumb { background: #879EC2; }
 
 /* ── Light mode: buttons ── */
-[data-testid="baseButton-primary"] {
+/* Must target child p/span/div because the broad "div { color:#0B1929 }"
+   rule above overrides color inherited from the button element itself. */
+[data-testid="baseButton-primary"],
+[data-testid="baseButton-primary"] p,
+[data-testid="baseButton-primary"] span,
+[data-testid="baseButton-primary"] div,
+[data-testid="stFormSubmitButton"] > button,
+[data-testid="stFormSubmitButton"] > button p,
+[data-testid="stFormSubmitButton"] > button span {
   background: #1555A2 !important;
   color: #FFFFFF !important;
 }
-[data-testid="baseButton-primary"]:hover { opacity: 0.88 !important; }
-[data-testid="baseButton-secondary"] {
+[data-testid="baseButton-primary"]:hover,
+[data-testid="stFormSubmitButton"] > button:hover { opacity: 0.88 !important; }
+[data-testid="baseButton-secondary"],
+[data-testid="baseButton-secondary"] p,
+[data-testid="baseButton-secondary"] span,
+[data-testid="baseButton-secondary"] div {
   background: #FFFFFF !important;
   border: 1px solid #879EC2 !important;
   color: #0B1929 !important;
@@ -1790,17 +1809,12 @@ st.markdown(f"""
 #  MAIN LAYOUT — chart left, panel right
 # ═══════════════════════════════════════════════════════════════════════════════
 chart_col, panel_col = st.columns([7.5, 2.5], gap="small")
-# Tracks which tab the user is on so panel_col can adapt.
-# Streamlit ≥1.31 uses lazy tab rendering — only the active tab's Python
-# code executes, so this session state is reliably set by the active tab only.
-st.session_state.setdefault("_active_tab", "chart")
 
 # ──────────────── LEFT: CHART AREA ────────────────────────────────────────────
 with chart_col:
     tab_chart, tab_bt, tab_mkv, tab_ml, tab_log, tab_acct, tab_wl = st.tabs(["CHART", "BACKTEST", "⛓ MARKOV", "🤖 ML", "LOG", "⚙ ACCOUNTS", "📊 WATCHLIST"])
 
     with tab_chart:
-        st.session_state["_active_tab"] = "chart"
         # Chart controls — 2-row layout to prevent label overlap
         _ms = int(st.session_state.get("ma_short", 9))
         _ml = int(st.session_state.get("ma_long", 21))
@@ -1812,8 +1826,9 @@ with chart_col:
         _ctrl_left, _ctrl_mid, _ctrl_right = st.columns([4, 4, 2])
         with _ctrl_left:
             n_can = st.slider(
-                f"Candles (of {len(df)} loaded)",
+                f"Showing {st.session_state.n_candles} of {len(df)} candles",
                 30, min(500, len(df)), st.session_state.n_candles, 10,
+                key="_chart_ncandles",
             )
             st.session_state.n_candles = n_can
         with _ctrl_mid:
@@ -1877,7 +1892,6 @@ with chart_col:
                 ))
 
     with tab_bt:
-        st.session_state["_active_tab"] = "backtest"
         # ── Backtest controls ────────────────────────────────────────────
         bl, br = st.columns([3, 1])
         with br:
@@ -2018,7 +2032,6 @@ with chart_col:
                 )
 
     with tab_mkv:
-        st.session_state["_active_tab"] = "markov"
         try:
             _mkv_df = st.session_state.get("df")
             if _mkv_df is None or len(_mkv_df) < 40:
@@ -2035,7 +2048,6 @@ with chart_col:
             st.error(f"Markov tab error: {_mkv_err}", icon="⚠️")
 
     with tab_ml:
-        st.session_state["_active_tab"] = "ml"
         try:
             render_ml_tab(
                 df         = st.session_state.get("df"),
@@ -2049,7 +2061,6 @@ with chart_col:
             st.code(traceback.format_exc(), language="python")
 
     with tab_log:
-        st.session_state["_active_tab"] = "log"
         try:
             # ── Signal Alert Log (BUY/SELL tracking with planned trade amount)
             from dashboard.alert_log import render_alert_log
@@ -2077,7 +2088,6 @@ with chart_col:
             st.error(f"Log tab error: {_log_err}", icon="⚠️")
 
     with tab_acct:
-        st.session_state["_active_tab"] = "accounts"
         try:
             render_account_panel()
         except Exception as _acct_err:
@@ -2086,7 +2096,6 @@ with chart_col:
             st.code(_tb.format_exc(), language="python")
 
     with tab_wl:
-        st.session_state["_active_tab"] = "watchlist"
         try:
             st.markdown(
                 '''<div style="font-family:var(--mono);font-size:11px;color:var(--text-sec);
@@ -2114,16 +2123,10 @@ with chart_col:
             st.code(_tb.format_exc(), language="python")
 
 # ──────────────── RIGHT: SIGNAL PANEL ─────────────────────────────────────────
-# Only render signal panel on tabs where it's contextually relevant.
-# On LOG / ACCOUNTS / WATCHLIST tabs the panel takes space without adding value.
-_signal_tabs = {"chart", "backtest", "markov", "ml"}
-_show_panel  = st.session_state.get("_active_tab", "chart") in _signal_tabs
 with panel_col:
 
     # ── Signal card ───────────────────────────────────────────────────────────
-    if not _show_panel:
-        pass  # panel hidden on LOG / ACCOUNTS / WATCHLIST tabs
-    elif rec:
+    if rec:
         sig   = rec.signal
         score = rec.composite_score
         conf  = rec.confidence_pct
