@@ -204,7 +204,7 @@ input:focus, textarea:focus { border-color: var(--border-lit) !important; box-sh
 /* ── Buttons ── */
 [data-testid="baseButton-primary"] {
   background: var(--blue) !important;
-  color: #000 !important;
+  color: #FFFFFF !important;
   border: none !important;
   font-family: var(--mono) !important;
   font-size: 11px !important;
@@ -1856,11 +1856,9 @@ with chart_col:
                     if "BB" in (trace.name or ""):
                         trace.visible = False
             st.plotly_chart(fig, width="stretch",
-                key="main_chart",
                 config=dict(
                     scrollZoom=True,
                     displayModeBar=True,
-                    # Keep only useful tools — remove clutter
                     modeBarButtonsToRemove=[
                         "autoScale2d","lasso2d","select2d",
                         "toggleSpikelines","hoverClosestCartesian",
