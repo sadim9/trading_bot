@@ -95,7 +95,7 @@ def _record_notify(symbol: str, sig: str):
     _last_signal[symbol] = (sig, time.time())
 
 
-async def run_signal_cycle(symbols: list, watchlist_cfg: dict, engine):
+async def run_signal_cycle(symbols: list, watchlist_cfg: dict, engine, settings: dict = None):
     from sqlalchemy.dialects.postgresql import insert as pg_insert
     from server.db.database import AsyncSessionLocal
     from server.db.models import Signal, Trade, OHLCVBar
@@ -192,6 +192,7 @@ async def run_signal_cycle(symbols: list, watchlist_cfg: dict, engine):
                 if rec.signal in ("BUY", "SELL"):
                     try:
                         from dashboard.alert_log import log_alert
+                        _planned = float((settings or {}).get("planned_trade_amount", 0.0))
                         log_alert(
                             symbol         = symbol,
                             signal         = rec.signal,
@@ -199,7 +200,7 @@ async def run_signal_cycle(symbols: list, watchlist_cfg: dict, engine):
                             strategy_mode  = sym_mode,
                             score          = rec.composite_score,
                             confidence     = rec.confidence_pct,
-                            planned_amount = 0.0,
+                            planned_amount = _planned,
                             entry_price    = rec.entry_price,
                             stop_loss      = rec.stop_loss,
                             take_profit    = rec.take_profit,
@@ -290,7 +291,7 @@ async def main():
             log.warning(f"Alert engine init failed: {_ae}")
 
         log.info(f"Symbols this cycle: {all_symbols}")
-        await run_signal_cycle(all_symbols, watchlist_cfg, engine)
+        await run_signal_cycle(all_symbols, watchlist_cfg, engine, settings)
 
         elapsed   = (datetime.now(timezone.utc) - cycle_start).total_seconds()
         sleep_for = max(0, POLL_INTERVAL - elapsed)
