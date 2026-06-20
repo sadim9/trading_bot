@@ -127,21 +127,37 @@ html, body, [class*="css"], .stApp {
 [data-testid="stToolbar"], .reportview-container .main .block-container > div:first-child { visibility: hidden; height: 0; }
 
 /* ── Prevent page from fading/dimming during Streamlit reruns ── */
-/* Streamlit sets opacity on PARENT containers during the running state.
-   Overriding opacity on child elements alone does not help because CSS
-   opacity is not overridable on children once a parent has opacity < 1.
-   We therefore target the top-level content containers. */
+/* Streamlit 1.30+ uses a running-state class on the root. Override every
+   layer that gets an opacity reduction so content stays fully visible. */
 [data-testid="stAppViewContainer"],
 [data-testid="stMain"],
 [data-testid="stMainBlockContainer"],
+[data-testid="stVerticalBlock"],
+[data-testid="stHorizontalBlock"],
+[data-testid="column"],
 .main .block-container,
-.block-container {
+.block-container,
+.stApp,
+.element-container,
+.stPlotlyChart,
+[class*="stPlotlyChart"],
+[class*="element-container"] {
   opacity: 1 !important;
   transition: none !important;
+  pointer-events: auto !important;
 }
+/* Override the running-state backdrop that Streamlit injects */
+[data-testid="stAppViewBlockContainer"] { opacity: 1 !important; }
 /* Suppress Streamlit's running-state widget/spinner overlays */
 [data-testid="stStatusWidget"] { display: none !important; }
 .stSpinner > div { display: none !important; }
+/* Prevent Streamlit's rerun overlay from appearing */
+.running [data-testid="stAppViewContainer"],
+.running [data-testid="stMain"],
+.running .main,
+.running .block-container { opacity: 1 !important; }
+/* Suppress the "running" animation on stApp */
+[data-testid="stApp"].running [data-testid="stAppViewContainer"] { opacity: 1 !important; }
 
 /* ── Metrics ── */
 [data-testid="metric-container"] {
@@ -918,30 +934,35 @@ input::placeholder, textarea::placeholder { color: #7090AE !important; }
 ::-webkit-scrollbar-track { background: #F2F6FC; }
 ::-webkit-scrollbar-thumb { background: #879EC2; }
 
-/* ── Light mode: buttons ── */
-/* Must target child p/span/div because the broad "div { color:#0B1929 }"
-   rule above overrides color inherited from the button element itself. */
+/* ── Light mode: buttons — nuclear specificity to beat broad div/p/span rule ── */
+/* Streamlit renders button text inside <p> elements nested inside the button
+   wrapper div. The broad div/p/span rule above uses !important, so we need
+   equally-or-more-specific !important overrides here. These appear AFTER that
+   rule so they win the last-declaration tiebreaker. */
 [data-testid="baseButton-primary"],
-[data-testid="baseButton-primary"] p,
-[data-testid="baseButton-primary"] span,
-[data-testid="baseButton-primary"] div,
+[data-testid="baseButton-primary"] *,
+[data-testid="stBaseButton-primary"],
+[data-testid="stBaseButton-primary"] *,
+button[kind="primary"],
+button[kind="primary"] *,
 [data-testid="stFormSubmitButton"] > button,
-[data-testid="stFormSubmitButton"] > button p,
-[data-testid="stFormSubmitButton"] > button span {
+[data-testid="stFormSubmitButton"] > button * {
   background: #1555A2 !important;
   color: #FFFFFF !important;
 }
 [data-testid="baseButton-primary"]:hover,
+[data-testid="stBaseButton-primary"]:hover,
 [data-testid="stFormSubmitButton"] > button:hover { opacity: 0.88 !important; }
 [data-testid="baseButton-secondary"],
-[data-testid="baseButton-secondary"] p,
-[data-testid="baseButton-secondary"] span,
-[data-testid="baseButton-secondary"] div {
+[data-testid="baseButton-secondary"] *,
+[data-testid="stBaseButton-secondary"],
+[data-testid="stBaseButton-secondary"] * {
   background: #FFFFFF !important;
   border: 1px solid #879EC2 !important;
   color: #0B1929 !important;
 }
-[data-testid="baseButton-secondary"]:hover {
+[data-testid="baseButton-secondary"]:hover,
+[data-testid="stBaseButton-secondary"]:hover {
   background: #DBE4F5 !important;
   border-color: #5278B0 !important;
   color: #0B1929 !important;
@@ -1598,8 +1619,16 @@ if need_load:
         st.session_state.df           = df
         st.session_state.last_refresh = time.time()
         try:
-            agg = _aggregator(id(CONFIG), strategy_mode)
-            rec_new = agg.analyse(df, sym)
+            # Cache signal result keyed by (symbol, last-bar-timestamp, strategy).
+            # On auto-refresh the data hasn't changed until a new bar arrives, so
+            # reusing the cached rec avoids expensive strategy recomputation.
+            _bar_ts   = str(df.index[-1]) if len(df) > 0 else ""
+            _rec_key  = f"_rec_cache_{sym}_{_bar_ts}_{strategy_mode}"
+            rec_new   = st.session_state.get(_rec_key)
+            if rec_new is None:
+                agg     = _aggregator(id(CONFIG), strategy_mode)
+                rec_new = agg.analyse(df, sym)
+                st.session_state[_rec_key] = rec_new
             st.session_state.rec = rec_new
             # Record Markov signal for chart overlay when in a Markov mode
             if strategy_mode in ("markov", "markov_multi", "markov_plus") and rec_new and rec_new.signal in ("BUY", "SELL"):
@@ -1662,38 +1691,47 @@ if df is None or len(df) < 2:
 # ── Alert firing ───────────────────────────────────────────────────────────────
 # prev_signals is per-symbol so switching tickers never spuriously re-fires
 # an alert that was already seen on the target ticker.
+# _seen_symbols tracks tickers loaded at least once so the FIRST load of a
+# ticker (which happens on tab-switch) does NOT fire — we record the signal
+# but stay silent. Only signal CHANGES on subsequent loads fire.
 engine = st.session_state.alert_engine
 if rec:
-    # Per-symbol previous-signal tracking (keyed by symbol string)
-    _prev_signals = st.session_state.setdefault("prev_signals", {})
+    _prev_signals  = st.session_state.setdefault("prev_signals", {})
+    _seen_symbols  = st.session_state.setdefault("_seen_symbols", set())
     _prev_sig_for_sym = _prev_signals.get(sym)
+    _is_first_load_of_sym = sym not in _seen_symbols
 
-    _fired_alerts = engine.check_conditions(sym, df, rec, _prev_sig_for_sym)
-    for a in _fired_alerts:
-        st.toast(f"{a.emoji} {a.title} — {a.symbol} @ {a.price:.4f}", icon="⚡")
-    # Log BUY/SELL signal alerts to the persistent alert log
-    if rec.signal in ("BUY", "SELL") and rec.signal != _prev_sig_for_sym:
-        try:
-            from dashboard.alert_log import log_alert
-            log_alert(
-                symbol        = sym,
-                signal        = rec.signal,
-                price         = rec.entry_price,
-                strategy_mode = strategy_mode,
-                score         = rec.composite_score,
-                confidence    = rec.confidence_pct,
-                planned_amount= float(st.session_state.get("planned_trade_amount", 0.0)),
-                entry_price   = rec.entry_price,
-                stop_loss     = rec.stop_loss,
-                take_profit   = rec.take_profit,
-            )
-        except Exception:
-            pass
-    # Always update prev_signal for THIS symbol (HOLD resets BUY memory per ticker)
+    if _is_first_load_of_sym:
+        # Record the signal silently — no notification on first ticker visit
+        _seen_symbols.add(sym)
+        st.session_state["_seen_symbols"] = _seen_symbols
+    else:
+        _fired_alerts = engine.check_conditions(sym, df, rec, _prev_sig_for_sym)
+        for a in _fired_alerts:
+            st.toast(f"{a.emoji} {a.title} — {a.symbol} @ {a.price:.4f}", icon="⚡")
+        # Log BUY/SELL signal alerts to the persistent alert log
+        if rec.signal in ("BUY", "SELL") and rec.signal != _prev_sig_for_sym:
+            try:
+                from dashboard.alert_log import log_alert
+                log_alert(
+                    symbol        = sym,
+                    signal        = rec.signal,
+                    price         = rec.entry_price,
+                    strategy_mode = strategy_mode,
+                    score         = rec.composite_score,
+                    confidence    = rec.confidence_pct,
+                    planned_amount= float(st.session_state.get("planned_trade_amount", 0.0)),
+                    entry_price   = rec.entry_price,
+                    stop_loss     = rec.stop_loss,
+                    take_profit   = rec.take_profit,
+                )
+            except Exception:
+                pass
+
+    # Always update prev_signal for THIS symbol
     _prev_signals[sym] = rec.signal
     st.session_state.prev_signals = _prev_signals
-    # Keep legacy key in sync so any other code referencing it sees current symbol's state
-    st.session_state.prev_signal = rec.signal
+    st.session_state.prev_signal  = rec.signal
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TICKER STRIP — 24h stats for Binance
@@ -1851,6 +1889,15 @@ with chart_col:
             sigs     = st.session_state.historical_signals if show_sig else []
             mkv_sigs = st.session_state.get("markov_signals", [])
             _is_markov_mode = st.session_state.get("strategy_mode", "multi") in ("markov", "markov_multi", "markov_plus")
+
+            # Track whether the chart params changed (new symbol, interval, or period).
+            # Only apply the initial x-axis range on param change so the user's
+            # zoom/pan choice (e.g. clicking "ALL") is preserved on auto-refresh.
+            _chart_key = f"{sym}_{ivl}_{per}"
+            _params_changed_for_chart = _chart_key != st.session_state.get("_last_chart_key_render")
+            if _params_changed_for_chart:
+                st.session_state["_last_chart_key_render"] = _chart_key
+
             fig  = build_chart(
                 df=df, symbol=sym, signals=sigs,
                 entry_price=rec.entry_price  if rec else None,
@@ -1866,13 +1913,17 @@ with chart_col:
                 light_mode     =st.session_state.get("theme", "light") == "light",
                 tz_offset_hours=float(st.session_state.get("tz_offset_hours", 3.0)),
                 interval       =ivl,
+                apply_initial_range=_params_changed_for_chart,
             )
             # Patch BB visibility
             if not show_bb:
                 for trace in fig.data:
                     if "BB" in (trace.name or ""):
                         trace.visible = False
-            st.plotly_chart(fig, width="stretch",
+            # Use a stable key so Plotly's uirevision (zoom/pan state) is preserved
+            # across auto-refreshes. Key changes only when symbol changes.
+            st.plotly_chart(fig, use_container_width=True,
+                key=f"main_chart_{sym}",
                 config=dict(
                     scrollZoom=True,
                     displayModeBar=True,

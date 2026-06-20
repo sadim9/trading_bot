@@ -18,6 +18,7 @@ Clicking any row switches the main chart to that ticker.
 
 from __future__ import annotations
 
+import html as _html_mod
 import json
 import time
 import warnings
@@ -29,6 +30,11 @@ import os
 
 import pandas as pd
 import streamlit as st
+
+
+def _esc(s: str) -> str:
+    """HTML-escape a user-provided string to prevent XSS in markdown blocks."""
+    return _html_mod.escape(str(s))
 
 warnings.filterwarnings("ignore")
 
@@ -219,7 +225,11 @@ def scan_watchlist(
                 # per-symbol source override, fallback to global source
                 sym_strategies.get(sym, {}).get("source_override", "(default)") if sym_strategies.get(sym, {}).get("source_override", "(default)") != "(default)" else source,
                 sym_strategies.get(sym, {}).get("strategy", "multi"),
-                tv_exchange,
+                # per-symbol TV exchange, fallback to global tv_exchange
+                (lambda _e, _g: None if _e in ("(default)", "Auto-detect") else _e)(
+                    sym_strategies.get(sym, {}).get("tv_exchange", "(default)"),
+                    tv_exchange
+                ) or tv_exchange,
             ): sym
             for sym in symbols
         }
@@ -351,18 +361,22 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
             unsafe_allow_html=True,
         )
         cfg_changed = False
-        hdr1, hdr2, hdr3, hdr4, hdr5 = st.columns([1.5, 1.8, 1.5, 1.5, 0.8])
+        _TV_EXCH_OPTS = ["(default)", "Auto-detect", "NASDAQ", "NYSE", "AMEX",
+                         "BINANCE", "KRAKEN", "OANDA", "TVC", "DJ", "SP500",
+                         "NSE", "BSE", "LSE"]
+        hdr1, hdr2, hdr3, hdr4, hdr5, hdr6 = st.columns([1.2, 1.6, 1.3, 1.4, 1.4, 0.7])
         hdr1.markdown('<span style="font-family:monospace;font-size:9px;color:#4a5a7a">SYMBOL</span>', unsafe_allow_html=True)
         hdr2.markdown('<span style="font-family:monospace;font-size:9px;color:#4a5a7a">STRATEGY</span>', unsafe_allow_html=True)
         hdr3.markdown('<span style="font-family:monospace;font-size:9px;color:#4a5a7a">INTERVAL</span>', unsafe_allow_html=True)
         hdr4.markdown('<span style="font-family:monospace;font-size:9px;color:#4a5a7a">SOURCE OVERRIDE</span>', unsafe_allow_html=True)
-        hdr5.markdown('<span style="font-family:monospace;font-size:9px;color:#4a5a7a">NOTIFY</span>', unsafe_allow_html=True)
+        hdr5.markdown('<span style="font-family:monospace;font-size:9px;color:#4a5a7a">TV EXCHANGE</span>', unsafe_allow_html=True)
+        hdr6.markdown('<span style="font-family:monospace;font-size:9px;color:#4a5a7a">NOTIFY</span>', unsafe_allow_html=True)
 
         _ivl_opts_sym = ["(default)", "5m", "15m", "1h", "4h", "1d"]
         src_opts_sym = ["(default)"] + _wl_sources
         for sym in symbols:
             sym_data = wl_cfg.get(sym, {})
-            col1, col2, col3, col4, col5 = st.columns([1.5, 1.8, 1.5, 1.5, 0.8])
+            col1, col2, col3, col4, col5, col6 = st.columns([1.2, 1.6, 1.3, 1.4, 1.4, 0.7])
             col1.markdown(
                 f'<div style="font-family:monospace;font-size:11px;color:#dce4f5;'
                 f'padding-top:6px">{sym}</div>', unsafe_allow_html=True
@@ -389,20 +403,31 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
                 label_visibility="collapsed", key=f"wl_src_{sym}",
             )
 
+            # TV Exchange per-symbol — only relevant when source override is tradingview
+            cur_tv_exch = sym_data.get("tv_exchange", "(default)")
+            _tv_exch_idx = _TV_EXCH_OPTS.index(cur_tv_exch) if cur_tv_exch in _TV_EXCH_OPTS else 0
+            new_tv_exch = col5.selectbox(
+                f"tv_{sym}", _TV_EXCH_OPTS, index=_tv_exch_idx,
+                label_visibility="collapsed", key=f"wl_tv_{sym}",
+                help="TradingView exchange for this symbol. Only applies when Source Override = tradingview.",
+            )
+
             cur_notify = sym_data.get("notify", True)
-            new_notify = col5.toggle("🔔", value=cur_notify, key=f"wl_notify_{sym}",
+            new_notify = col6.toggle("🔔", value=cur_notify, key=f"wl_notify_{sym}",
                                      label_visibility="collapsed")
 
             # Detect changes
             if (new_strat != cur_strat
                     or new_ivl_ov != cur_ivl_override
                     or new_src_ov != cur_src_override
+                    or new_tv_exch != cur_tv_exch
                     or new_notify != cur_notify):
                 wl_cfg[sym] = {
                     "strategy":         new_strat,
                     "interval_override": new_ivl_ov,
                     "source_override":  new_src_ov,
                     "source": new_src_ov if new_src_ov != "(default)" else wl_source,
+                    "tv_exchange":      new_tv_exch,
                     "notify":           new_notify,
                 }
                 cfg_changed = True
@@ -430,6 +455,20 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
             )
         st.session_state[cache_key]      = results
         st.session_state["wl_last_scan"] = time.time()
+        # Populate pinned ticker tabs with prices from this scan so tabs show
+        # live prices even before the user clicks each individual ticker.
+        _tc = st.session_state.get("_tabs_cache", {})
+        for _r in results:
+            _rsym = _r.get("symbol", "")
+            if _rsym and not _r.get("error") and _r.get("price", 0) > 0:
+                _existing = _tc.get(_rsym, {})
+                _tc[_rsym] = {
+                    **_existing,
+                    "close_price": _r.get("price", 0),
+                    "chg_pct":     _r.get("chg_pct", 0),
+                    "signal":      _r.get("signal", _existing.get("signal", "")),
+                }
+        st.session_state["_tabs_cache"] = _tc
 
         # Ensure every displayed symbol has an entry in watchlist_settings.json so
         # the background worker picks it up even if the user never opened per-symbol
@@ -499,8 +538,8 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
                 f'<div style="display:grid;grid-template-columns:{GRID};gap:4px;'
                 f'padding:6px 8px;font-family:monospace;font-size:10px;'
                 f'border-bottom:1px solid #1a2540;opacity:0.4">'
-                f'<span style="color:#dce4f5">{sym}</span>'
-                f'<span style="color:#ff4560;grid-column:2/-1">Error: {err}</span>'
+                f'<span style="color:#dce4f5">{_esc(sym)}</span>'
+                f'<span style="color:#ff4560;grid-column:2/-1">Error: {_esc(err)}</span>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
@@ -540,7 +579,7 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
             f'background:{row_bg};border-bottom:1px solid #1a2540;{border}'
             f'border-radius:2px;align-items:center">'
             f'<span style="color:#dce4f5;font-weight:{"700" if is_active else "400"}">'
-            f'{"[A] " if is_active else ""}{sym}</span>'
+            f'{"[A] " if is_active else ""}{_esc(sym)}</span>'
             f'<span style="color:#dce4f5">${price:,.4f}</span>'
             f'<span style="color:{chg_col}">{chg_arr}{abs(chg):.2f}%</span>'
             f'<span style="color:{sig_col};font-weight:600">{sig_label}</span>'
@@ -566,26 +605,36 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
             _render_ticker_detail(r, sym, sig, score, conf)
 
     # ── Alert firing (on-screen + push channels) ──────────────────────────────
+    # Only fire when the signal CHANGES for a symbol, not on every scan.
+    # _wl_prev_sigs tracks the last fired signal per symbol this session.
     engine = st.session_state.get("alert_engine")
     if engine:
+        _wl_prev_sigs = st.session_state.setdefault("_wl_prev_sigs", {})
         for r in results:
             sig = r.get("signal")
             sym = r.get("symbol", "")
             do_notify = wl_cfg.get(sym, {}).get("notify", True)
+            _prev_wl_sig = _wl_prev_sigs.get(sym)
             if sig in ("BUY", "SELL") and not r.get("error") and do_notify:
-                engine.fire(
-                    symbol=sym,
-                    signal=sig,
-                    price=r.get("price", 0),
-                    reason=(
-                        f"Watchlist [{wl_interval}] {sig} | "
-                        f"score {r.get('score', 0):+.3f} | "
-                        f"RSI {r.get('rsi', 50):.1f} | "
-                        f"conf {r.get('conf', 0):.0f}% | "
-                        f"mode {r.get('strategy_mode', 'multi')}"
-                    ),
-                    confidence=r.get("conf", 0),
-                )
+                # Only fire if signal changed from previous scan result
+                if sig != _prev_wl_sig:
+                    engine.fire(
+                        symbol=sym,
+                        signal=sig,
+                        price=r.get("price", 0),
+                        reason=(
+                            f"Watchlist [{wl_interval}] {sig} | "
+                            f"score {r.get('score', 0):+.3f} | "
+                            f"RSI {r.get('rsi', 50):.1f} | "
+                            f"conf {r.get('conf', 0):.0f}% | "
+                            f"mode {r.get('strategy_mode', 'multi')}"
+                        ),
+                        confidence=r.get("conf", 0),
+                    )
+                    _wl_prev_sigs[sym] = sig
+            elif sig == "HOLD":
+                # Reset so next BUY/SELL after a HOLD fires again
+                _wl_prev_sigs[sym] = "HOLD"
 
     return clicked_symbol
 

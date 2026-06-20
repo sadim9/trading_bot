@@ -196,6 +196,8 @@ def build_chart(
     show_vwap:        bool = True,   # VWAP line on intraday charts
     show_session_sep: bool = True,   # vertical session-separator lines (intraday)
     show_stoch_rsi:   bool = True,   # Stochastic RSI as 5th subplot
+    # Set False on auto-refresh so user's zoom/pan is preserved
+    apply_initial_range: bool = True,
 ) -> "go.Figure":
     """
     Build the full institutional chart figure.
@@ -850,9 +852,10 @@ def build_chart(
             ),
             showspikes=True, spikemode="across", spikesnap="cursor",
             spikecolor=T["text_dim"], spikethickness=1, spikedash="dot",
-            # Default visible range keeps chart from opening on ALL data.
-            # For intraday: last trading day. For 1d: last 30 days. For 1wk: last 26 weeks.
-            **_intraday_xrange(df, interval),
+            # Only apply the initial zoom window on first load / param change.
+            # On auto-refresh (apply_initial_range=False), skip so the user's
+            # zoom/pan position is preserved by Plotly's uirevision mechanism.
+            **(  _intraday_xrange(df, interval) if apply_initial_range else {}  ),
         ),
         # Spike lines
         yaxis=dict(showspikes=True, spikemode="toaxis", spikesnap="cursor",
@@ -882,6 +885,9 @@ def build_chart(
             showticklabels=(i == 5),
             automargin=False,
             fixedrange=False,
+            # Explicitly link every sub-chart x-axis to the main chart's x-axis
+            # so all panels stay perfectly aligned during zoom/pan.
+            matches="x" if i > 1 else None,
             title_text=_tz_label if i == 5 else None,
             title_font=dict(size=9, color=T["text_dim"]),
             tickformatstops=[
