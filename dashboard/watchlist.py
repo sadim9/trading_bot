@@ -361,9 +361,6 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
             unsafe_allow_html=True,
         )
         cfg_changed = False
-        _TV_EXCH_OPTS = ["(default)", "Auto-detect", "NASDAQ", "NYSE", "AMEX",
-                         "BINANCE", "KRAKEN", "OANDA", "TVC", "DJ", "SP500",
-                         "NSE", "BSE", "LSE"]
         hdr1, hdr2, hdr3, hdr4, hdr5, hdr6 = st.columns([1.2, 1.6, 1.3, 1.4, 1.4, 0.7])
         hdr1.markdown('<span style="font-family:monospace;font-size:9px;color:#4a5a7a">SYMBOL</span>', unsafe_allow_html=True)
         hdr2.markdown('<span style="font-family:monospace;font-size:9px;color:#4a5a7a">STRATEGY</span>', unsafe_allow_html=True)
@@ -403,14 +400,17 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
                 label_visibility="collapsed", key=f"wl_src_{sym}",
             )
 
-            # TV Exchange per-symbol — only relevant when source override is tradingview
-            cur_tv_exch = sym_data.get("tv_exchange", "(default)")
-            _tv_exch_idx = _TV_EXCH_OPTS.index(cur_tv_exch) if cur_tv_exch in _TV_EXCH_OPTS else 0
-            new_tv_exch = col5.selectbox(
-                f"tv_{sym}", _TV_EXCH_OPTS, index=_tv_exch_idx,
+            # TV Exchange per-symbol — free-text entry (only used when source=tradingview)
+            cur_tv_exch = sym_data.get("tv_exchange", "")
+            if cur_tv_exch in ("(default)", "Auto-detect"):
+                cur_tv_exch = ""
+            new_tv_exch_raw = col5.text_input(
+                f"tv_{sym}", value=cur_tv_exch,
+                placeholder="BINANCE",
                 label_visibility="collapsed", key=f"wl_tv_{sym}",
-                help="TradingView exchange for this symbol. Only applies when Source Override = tradingview.",
+                help="TradingView exchange for this symbol. Leave blank for auto-detect.",
             )
+            new_tv_exch = new_tv_exch_raw.strip().upper() or "(default)"
 
             cur_notify = sym_data.get("notify", True)
             new_notify = col6.toggle("🔔", value=cur_notify, key=f"wl_notify_{sym}",

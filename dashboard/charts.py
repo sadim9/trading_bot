@@ -198,6 +198,10 @@ def build_chart(
     show_stoch_rsi:   bool = True,   # Stochastic RSI as 5th subplot
     # Set False on auto-refresh so user's zoom/pan is preserved
     apply_initial_range: bool = True,
+    # Server-side x-axis range override: [start_str, end_str] ISO timestamps, or None for auto
+    x_range_override: Optional[list] = None,
+    # Tag appended to uirevision so Plotly resets zoom when period changes
+    uirevision_tag: str = "",
 ) -> "go.Figure":
     """
     Build the full institutional chart figure.
@@ -830,7 +834,7 @@ def build_chart(
         modebar=dict(orientation="v"),
         # uirevision: keeps zoom/pan state across Streamlit reruns.
         # Only reset when the symbol changes.
-        uirevision=f"chart_{symbol}",
+        uirevision=f"chart_{symbol}_{uirevision_tag}",
         transition=dict(duration=200, easing="cubic-in-out"),
         # Range selector buttons (TradingView-style time range buttons)
         xaxis=dict(
@@ -855,7 +859,10 @@ def build_chart(
             # Only apply the initial zoom window on first load / param change.
             # On auto-refresh (apply_initial_range=False), skip so the user's
             # zoom/pan position is preserved by Plotly's uirevision mechanism.
-            **(  _intraday_xrange(df, interval) if apply_initial_range else {}  ),
+            **(
+                {"range": x_range_override} if x_range_override is not None
+                else (_intraday_xrange(df, interval) if apply_initial_range else {})
+            ),
         ),
         # Spike lines
         yaxis=dict(showspikes=True, spikemode="toaxis", spikesnap="cursor",

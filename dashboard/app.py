@@ -934,38 +934,41 @@ input::placeholder, textarea::placeholder { color: #7090AE !important; }
 ::-webkit-scrollbar-track { background: #F2F6FC; }
 ::-webkit-scrollbar-thumb { background: #879EC2; }
 
-/* ── Light mode: buttons — nuclear specificity to beat broad div/p/span rule ── */
-/* Streamlit renders button text inside <p> elements nested inside the button
-   wrapper div. The broad div/p/span rule above uses !important, so we need
-   equally-or-more-specific !important overrides here. These appear AFTER that
-   rule so they win the last-declaration tiebreaker. */
+/* ── Light mode: buttons ── */
+/* background only on the button element; color on children so text is white/dark.
+   DO NOT set background/border on the * wildcard — it creates visible boxes
+   around every nested span/p/div inside the button. */
 [data-testid="baseButton-primary"],
-[data-testid="baseButton-primary"] *,
 [data-testid="stBaseButton-primary"],
-[data-testid="stBaseButton-primary"] *,
 button[kind="primary"],
-button[kind="primary"] *,
-[data-testid="stFormSubmitButton"] > button,
-[data-testid="stFormSubmitButton"] > button * {
+[data-testid="stFormSubmitButton"] > button {
   background: #1555A2 !important;
+  color: #FFFFFF !important;
+  border: none !important;
+}
+[data-testid="baseButton-primary"] *,
+[data-testid="stBaseButton-primary"] *,
+button[kind="primary"] *,
+[data-testid="stFormSubmitButton"] > button * {
   color: #FFFFFF !important;
 }
 [data-testid="baseButton-primary"]:hover,
 [data-testid="stBaseButton-primary"]:hover,
 [data-testid="stFormSubmitButton"] > button:hover { opacity: 0.88 !important; }
 [data-testid="baseButton-secondary"],
-[data-testid="baseButton-secondary"] *,
-[data-testid="stBaseButton-secondary"],
-[data-testid="stBaseButton-secondary"] * {
+[data-testid="stBaseButton-secondary"] {
   background: #FFFFFF !important;
   border: 1px solid #879EC2 !important;
+  color: #0B1929 !important;
+}
+[data-testid="baseButton-secondary"] *,
+[data-testid="stBaseButton-secondary"] * {
   color: #0B1929 !important;
 }
 [data-testid="baseButton-secondary"]:hover,
 [data-testid="stBaseButton-secondary"]:hover {
   background: #DBE4F5 !important;
   border-color: #5278B0 !important;
-  color: #0B1929 !important;
 }
 
 /* ── Light mode: acct-section / account panel cards ── */
@@ -1689,23 +1692,16 @@ if df is None or len(df) < 2:
     st.stop()
 
 # ── Alert firing ───────────────────────────────────────────────────────────────
-# prev_signals is per-symbol so switching tickers never spuriously re-fires
-# an alert that was already seen on the target ticker.
-# _seen_symbols tracks tickers loaded at least once so the FIRST load of a
-# ticker (which happens on tab-switch) does NOT fire — we record the signal
-# but stay silent. Only signal CHANGES on subsequent loads fire.
+# On the very first load of a ticker this session, record the signal silently
+# (no toast) so switching tabs doesn't spam the user. On every subsequent
+# refresh, fire alerts only when the signal actually changes.
 engine = st.session_state.alert_engine
 if rec:
-    _prev_signals  = st.session_state.setdefault("prev_signals", {})
-    _seen_symbols  = st.session_state.setdefault("_seen_symbols", set())
+    _prev_signals     = st.session_state.setdefault("prev_signals", {})
     _prev_sig_for_sym = _prev_signals.get(sym)
-    _is_first_load_of_sym = sym not in _seen_symbols
+    _is_first_load    = sym not in _prev_signals   # True only once per session per symbol
 
-    if _is_first_load_of_sym:
-        # Record the signal silently — no notification on first ticker visit
-        _seen_symbols.add(sym)
-        st.session_state["_seen_symbols"] = _seen_symbols
-    else:
+    if not _is_first_load:
         _fired_alerts = engine.check_conditions(sym, df, rec, _prev_sig_for_sym)
         for a in _fired_alerts:
             st.toast(f"{a.emoji} {a.title} — {a.symbol} @ {a.price:.4f}", icon="⚡")
@@ -1883,20 +1879,52 @@ with chart_col:
                 unsafe_allow_html=True,
             )
 
+        # ── Period selector (server-side, persists across auto-refresh) ────────
+        _period_opts = ["1H", "4H", "TODAY", "1D", "3D", "1W", "1M", "ALL"]
+        _cur_view = st.session_state.get("_chart_view", "ALL")
+        # Reset period to ALL when symbol/interval changes so chart opens fresh
+        _chart_key = f"{sym}_{ivl}_{per}"
+        if _chart_key != st.session_state.get("_last_chart_key_render"):
+            st.session_state["_last_chart_key_render"] = _chart_key
+            if not st.session_state.get("_chart_view"):
+                st.session_state["_chart_view"] = "ALL"
+                _cur_view = "ALL"
+
+        _pv_cols = st.columns(len(_period_opts))
+        for _pvi, _pv in enumerate(_period_opts):
+            _is_active_pv = _pv == _cur_view
+            if _pv_cols[_pvi].button(
+                _pv, key=f"_pv_{_pv}",
+                type="primary" if _is_active_pv else "secondary",
+                use_container_width=True,
+            ):
+                st.session_state["_chart_view"] = _pv
+                _cur_view = _pv
+                st.rerun()
+
+        # Compute explicit x-axis range from selected period (server-side)
+        from datetime import datetime as _dt, timedelta as _td
+        _now_utc = _dt.utcnow()
+        _tz_h    = float(st.session_state.get("tz_offset_hours", 3.0))
+        _today0  = _now_utc.replace(hour=0, minute=0, second=0, microsecond=0) - _td(hours=_tz_h)
+        _range_map = {
+            "1H":    [(_now_utc - _td(hours=1)).isoformat(), _now_utc.isoformat()],
+            "4H":    [(_now_utc - _td(hours=4)).isoformat(), _now_utc.isoformat()],
+            "TODAY": [_today0.isoformat(), _now_utc.isoformat()],
+            "1D":    [(_now_utc - _td(days=1)).isoformat(), _now_utc.isoformat()],
+            "3D":    [(_now_utc - _td(days=3)).isoformat(), _now_utc.isoformat()],
+            "1W":    [(_now_utc - _td(weeks=1)).isoformat(), _now_utc.isoformat()],
+            "1M":    [(_now_utc - _td(days=30)).isoformat(), _now_utc.isoformat()],
+            "ALL":   None,
+        }
+        _x_range = _range_map.get(_cur_view)
+
         if not PLOTLY_OK:
             st.error("pip install plotly")
         else:
             sigs     = st.session_state.historical_signals if show_sig else []
             mkv_sigs = st.session_state.get("markov_signals", [])
             _is_markov_mode = st.session_state.get("strategy_mode", "multi") in ("markov", "markov_multi", "markov_plus")
-
-            # Track whether the chart params changed (new symbol, interval, or period).
-            # Only apply the initial x-axis range on param change so the user's
-            # zoom/pan choice (e.g. clicking "ALL") is preserved on auto-refresh.
-            _chart_key = f"{sym}_{ivl}_{per}"
-            _params_changed_for_chart = _chart_key != st.session_state.get("_last_chart_key_render")
-            if _params_changed_for_chart:
-                st.session_state["_last_chart_key_render"] = _chart_key
 
             fig  = build_chart(
                 df=df, symbol=sym, signals=sigs,
@@ -1913,7 +1941,9 @@ with chart_col:
                 light_mode     =st.session_state.get("theme", "light") == "light",
                 tz_offset_hours=float(st.session_state.get("tz_offset_hours", 3.0)),
                 interval       =ivl,
-                apply_initial_range=_params_changed_for_chart,
+                apply_initial_range=False,
+                x_range_override=_x_range,
+                uirevision_tag=_cur_view,
             )
             # Patch BB visibility
             if not show_bb:
