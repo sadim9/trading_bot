@@ -1915,9 +1915,20 @@ with chart_col:
             "3D":    [(_now_utc - _td(days=3)).isoformat(), _now_utc.isoformat()],
             "1W":    [(_now_utc - _td(weeks=1)).isoformat(), _now_utc.isoformat()],
             "1M":    [(_now_utc - _td(days=30)).isoformat(), _now_utc.isoformat()],
-            "ALL":   None,
         }
-        _x_range = _range_map.get(_cur_view)
+        # ALL: explicitly compute range as full data span + 3% right padding so new
+        # bars are always visible without dragging. uirevision includes the last bar
+        # timestamp so it resets on each new bar, ensuring the latest price is shown.
+        _last_bar_str = str(df.index[-1]) if len(df) > 0 else ""
+        if _cur_view == "ALL" and len(df) >= 2:
+            _span_secs = (df.index[-1] - df.index[0]).total_seconds()
+            _pad = _td(seconds=max(3600, _span_secs * 0.03))
+            _all_end = df.index[-1].to_pydatetime().replace(tzinfo=None) + _pad
+            _x_range = [df.index[0].isoformat(), _all_end.isoformat()]
+            _uirev_tag = f"ALL_{_last_bar_str}"   # resets on new bar → always follows latest
+        else:
+            _x_range = _range_map.get(_cur_view)
+            _uirev_tag = _cur_view                 # stable → preserves user zoom within period
 
         if not PLOTLY_OK:
             st.error("pip install plotly")
@@ -1943,7 +1954,7 @@ with chart_col:
                 interval       =ivl,
                 apply_initial_range=False,
                 x_range_override=_x_range,
-                uirevision_tag=_cur_view,
+                uirevision_tag=_uirev_tag,
             )
             # Patch BB visibility
             if not show_bb:
