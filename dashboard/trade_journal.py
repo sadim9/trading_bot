@@ -376,13 +376,60 @@ def render_trade_journal():
     if not open_trades.empty:
         st.markdown(_section(f"OPEN POSITIONS ({len(open_trades)})"), unsafe_allow_html=True)
 
-        close_cols = ["order_id", "symbol", "side", "quantity", "fill_price",
-                      "stop_loss", "take_profit", "timestamp", "broker", "reason"]
-        show_open = open_trades[[c for c in close_cols if c in open_trades.columns]].copy()
+        show_open = open_trades.copy()
 
-        # Format timestamps
+        # ── Unrealized P&L from current market price ──────────────────────
+        _unreal_pnl = []
+        _unreal_pct = []
+        for _, _row in show_open.iterrows():
+            try:
+                from data.ingestion import load_data
+                _sym   = str(_row.get("symbol", ""))
+                _entry = float(_row.get("fill_price") or _row.get("entry_price") or 0)
+                _qty   = float(_row.get("quantity", 1))
+                _side  = str(_row.get("side", "buy")).lower()
+                _cur_px = None
+                if _sym and _entry > 0:
+                    try:
+                        _df = load_data(_sym, interval="1d", period="5d", source="yfinance")
+                        if _df is not None and len(_df) > 0:
+                            _cur_px = float(_df["Close"].iloc[-1])
+                    except Exception:
+                        pass
+                if _cur_px and _entry > 0:
+                    if _side == "buy":
+                        _pct = (_cur_px - _entry) / _entry
+                    else:
+                        _pct = (_entry - _cur_px) / _entry
+                    _unreal_pnl.append(round(_pct * _entry * _qty, 4))
+                    _unreal_pct.append(round(_pct * 100, 2))
+                else:
+                    _unreal_pnl.append(None)
+                    _unreal_pct.append(None)
+            except Exception:
+                _unreal_pnl.append(None)
+                _unreal_pct.append(None)
+
+        show_open = show_open.reset_index(drop=True)
+        show_open["unrealized_pnl"] = _unreal_pnl
+        show_open["unrealized_pct"] = _unreal_pct
+
+        close_cols = ["order_id", "symbol", "side", "quantity", "fill_price",
+                      "stop_loss", "take_profit", "unrealized_pnl", "unrealized_pct",
+                      "timestamp", "broker", "reason"]
+        show_open = show_open[[c for c in close_cols if c in show_open.columns]].copy()
+
+        # Format columns
         if "timestamp" in show_open.columns:
             show_open["timestamp"] = show_open["timestamp"].dt.strftime("%Y-%m-%d %H:%M")
+        if "unrealized_pnl" in show_open.columns:
+            show_open["unrealized_pnl"] = show_open["unrealized_pnl"].apply(
+                lambda x: f"{x:+,.4f}" if pd.notna(x) else "—"
+            )
+        if "unrealized_pct" in show_open.columns:
+            show_open["unrealized_pct"] = show_open["unrealized_pct"].apply(
+                lambda x: f"{x:+.2f}%" if pd.notna(x) else "—"
+            )
 
         st.dataframe(show_open, width="stretch", hide_index=True)
 

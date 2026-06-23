@@ -345,23 +345,3 @@ class SignalAggregator:
         kelly_f   = min(kelly_f, rc.max_position_pct)
 
         return round(kelly_f * 100, 2)
-
-    def _position_size(self, score: float, entry: float, stop: float) -> float:
-        """Kelly or fixed position sizing. Returns % of portfolio."""
-        rc     = self.cfg.risk
-        method = rc.sizing_method
-
-        if method == "fixed":
-            return rc.fixed_position_pct * 100
-
-        prob_win  = (abs(score) + 1.0) / 2.0
-        prob_lose = 1.0 - prob_win
-        risk_pct  = abs(entry - stop) / entry if entry else 0.02
-        b         = rc.take_profit_pct / risk_pct if risk_pct > 0 else 1.0
-
-        kelly_f   = (b * prob_win - prob_lose) / b
-        kelly_f   = max(0.0, kelly_f)
-        kelly_f  *= rc.kelly_fraction
-        kelly_f   = min(kelly_f, rc.max_position_pct)
-
-        return round(kelly_f * 100, 2)

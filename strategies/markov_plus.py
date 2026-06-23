@@ -170,17 +170,31 @@ class MarkovPlusStrategy(BaseStrategy):
         row_1     = P[current_state]
         j_star_1  = int(np.argmax(row_1))
         p_hat_1   = float(row_1[j_star_1])
-        persist_1 = float(P[j_star_1, j_star_1])
 
-        gap_1     = p_hat_1 - market_q
+        # Blend current-state and next-state persistence so BUY/SELL are symmetric.
+        # Bear states self-persist more than bull states; checking only next-state
+        # persistence creates a structural SELL bias.
+        persist_next = float(P[j_star_1, j_star_1])
+        persist_curr = float(P[current_state, current_state])
+        persist_1    = (persist_next + persist_curr) / 2.0
+
+        # Direction-aware market_q: for a predicted bullish move compare p_hat against
+        # market_q (upside implied probability); for bearish, compare against 1-market_q
+        # (downside implied probability). Without this, entries only fire when price is
+        # near its low, creating a structural SELL bias.
+        is_bullish_1step = j_star_1 >= (n_eff / 2.0)
+        market_q_dir = market_q if is_bullish_1step else (1.0 - market_q)
+
+        gap_1     = p_hat_1 - market_q_dir
         cond_gap  = gap_1     >= self.eps
         cond_pers = persist_1 >= self.tau
         entry_ok  = cond_gap and cond_pers
 
         reasons.append(
-            f"1-step: j*={j_star_1}  p̂={p_hat_1:.4f}  Q={market_q:.4f}  "
+            f"1-step: j*={j_star_1}  p̂={p_hat_1:.4f}  Q_dir={market_q_dir:.4f}  "
             f"gap={gap_1:+.4f} {'✓' if cond_gap else '✗'}  "
-            f"persist={persist_1:.4f} {'✓' if cond_pers else '✗'}"
+            f"persist={persist_1:.4f} (curr={persist_curr:.4f}+next={persist_next:.4f})/2 "
+            f"{'✓' if cond_pers else '✗'}"
         )
 
         # ── N-step forecast with exponential-decay blend ─────────────────────

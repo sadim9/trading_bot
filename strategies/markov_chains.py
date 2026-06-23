@@ -167,11 +167,25 @@ class MarkovChainsStrategy(BaseStrategy):
         row_1     = P[current_state]
         j_star_1  = int(np.argmax(row_1))
         p_hat_1   = float(row_1[j_star_1])
-        persist_1 = float(P[j_star_1, j_star_1])
+
+        # Blend current-state and next-state persistence so BUY/SELL are symmetric.
+        # Bear states self-persist more than bull states, so checking only next-state
+        # persistence creates a structural SELL bias.
+        persist_next = float(P[j_star_1, j_star_1])
+        persist_curr = float(P[current_state, current_state])
+        persist_1    = (persist_next + persist_curr) / 2.0
 
         window   = min(50, len(close))
         lo, hi   = np.min(close[-window:]), np.max(close[-window:])
-        market_q = float((close[-1] - lo) / (hi - lo)) if hi > lo else 0.5
+        base_q   = float((close[-1] - lo) / (hi - lo)) if hi > lo else 0.5
+
+        # Direction-aware market_q: for a predicted bullish move compare against the
+        # market's implied probability of further upside (base_q); for bearish compare
+        # against the implied probability of further downside (1 - base_q).
+        # Without this, entries are only possible when price is near its low, creating
+        # a structural bias toward SELL signals.
+        is_bullish_1step = j_star_1 >= (n_eff / 2.0)
+        market_q = base_q if is_bullish_1step else (1.0 - base_q)
 
         gap_1     = p_hat_1 - market_q
         cond_gap  = gap_1     >= self.eps
@@ -181,7 +195,8 @@ class MarkovChainsStrategy(BaseStrategy):
         reasons.append(
             f"1-step: j*={j_star_1}  p_hat={p_hat_1:.4f}  q={market_q:.4f}  "
             f"gap={gap_1:+.4f} {'OK' if cond_gap else 'FAIL'} eps={self.eps}  "
-            f"persist={persist_1:.4f} {'OK' if cond_pers else 'FAIL'} tau={self.tau}"
+            f"persist={persist_1:.4f} (curr={persist_curr:.4f}+next={persist_next:.4f})/2 "
+            f"{'OK' if cond_pers else 'FAIL'} tau={self.tau}"
         )
 
         # Step 7: n-step ahead forecast

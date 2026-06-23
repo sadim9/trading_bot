@@ -256,6 +256,70 @@ async def run_signal_cycle(symbols: list, watchlist_cfg: dict, engine, settings:
                     db.add(trade)
                     log.info(f"  {symbol}: auto paper trade created")
 
+                    # Also write to CSV so the trade journal fallback log stays current
+                    try:
+                        from brokers.order_manager import OrderManager
+                        _mgr = OrderManager(paper_trading=True)
+                        _mgr.log_manual_trade(
+                            symbol      = symbol,
+                            side        = rec.signal.lower(),
+                            quantity    = 1.0,
+                            entry_price = rec.entry_price,
+                            stop_loss   = rec.stop_loss,
+                            take_profit = rec.take_profit,
+                            broker      = "paper",
+                            reason      = (
+                                f"Auto paper trade | score={rec.composite_score:+.3f} | "
+                                f"conf={rec.confidence_pct:.0f}% | mode={sym_mode}"
+                            ),
+                        )
+                    except Exception as _csv_err:
+                        log.warning(f"  {symbol}: CSV log write failed: {_csv_err}")
+
+                # Auto-close open paper trades in the CSV when SL or TP is reached
+                if os.getenv("BOT_AUTO_PAPER_TRADE", "false").lower() == "true":
+                    try:
+                        from brokers.order_manager import OrderManager
+                        _mgr = OrderManager(paper_trading=True)
+                        _cur_px = float(df["Close"].iloc[-1])
+                        _history = _mgr.get_trade_history()
+                        for _t in _history:
+                            if (
+                                _t.get("status") == "open"
+                                and _t.get("symbol", "").upper() == symbol.upper()
+                            ):
+                                _oid  = _t.get("order_id", "")
+                                _side = _t.get("side", "buy").lower()
+                                _ep   = float(_t.get("fill_price") or _t.get("entry_price") or 0)
+                                _sl   = float(_t.get("stop_loss") or 0)
+                                _tp   = float(_t.get("take_profit") or 0)
+                                if not (_ep and _oid):
+                                    continue
+                                _exit_reason = None
+                                _exit_px     = None
+                                if _side == "buy":
+                                    if _sl and _cur_px <= _sl:
+                                        _exit_reason, _exit_px = "stop_loss", _sl
+                                    elif _tp and _cur_px >= _tp:
+                                        _exit_reason, _exit_px = "take_profit", _tp
+                                else:
+                                    if _sl and _cur_px >= _sl:
+                                        _exit_reason, _exit_px = "stop_loss", _sl
+                                    elif _tp and _cur_px <= _tp:
+                                        _exit_reason, _exit_px = "take_profit", _tp
+                                if _exit_reason and _exit_px:
+                                    _closed = _mgr.close_trade(_oid, _exit_px, _exit_reason)
+                                    if _closed:
+                                        _side_up = _side.upper()
+                                        _pnl_dir = (_exit_px - _ep) if _side == "buy" else (_ep - _exit_px)
+                                        log.info(
+                                            f"  {symbol}: auto-closed paper trade {_oid} "
+                                            f"[{_side_up}] at {_exit_px:.4f} via {_exit_reason} "
+                                            f"| P&L: {_pnl_dir:+.4f}"
+                                        )
+                    except Exception as _ac_err:
+                        log.warning(f"  {symbol}: auto-close check failed: {_ac_err}")
+
             except Exception as e:
                 log.warning(f"  Failed {symbol}: {e}")
 
