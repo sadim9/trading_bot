@@ -257,6 +257,9 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
         wl_cfg = _load_watchlist_cfg()
         st.session_state["_wl_cfg"] = wl_cfg
 
+    # Restore the user's symbol list from the saved JSON so it survives page reloads
+    _saved_sym_text = wl_cfg.get("_symbols", "")
+
     # ── Controls row ──────────────────────────────────────────────────────────
     c1, c2, c3, c4, c5 = st.columns([3, 2, 2, 1.5, 1.5])
 
@@ -267,7 +270,7 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
 
     symbols_raw = c2.text_input(
         "Symbols",
-        value=st.session_state.get("wl_symbols_text", "AAPL, MSFT, NVDA, GOOGL, TSLA"),
+        value=st.session_state.get("wl_symbols_text", _saved_sym_text or "AAPL, MSFT, NVDA, GOOGL, TSLA"),
         key="wl_symbols_input",
         label_visibility="collapsed",
         placeholder="AAPL, MSFT, NVDA ...",
@@ -470,14 +473,17 @@ def render_watchlist(main_symbol: str, main_source: str, main_interval: str):
                 }
         st.session_state["_tabs_cache"] = _tc
 
-        # Ensure every displayed symbol has an entry in watchlist_settings.json so
-        # the background worker picks it up even if the user never opened per-symbol
-        # settings.  Existing entries are left unchanged; only missing ones get defaults.
+        # Persist only the user-typed symbols (excludes auto-injected main_symbol).
+        # Also save the raw symbols text so it survives page reloads.
+        _user_typed_syms = [s.strip().upper() for s in symbols_raw.split(",") if s.strip()]
         _cfg_changed = False
-        for _sym in symbols:
+        for _sym in _user_typed_syms:
             if _sym not in wl_cfg:
                 wl_cfg[_sym] = {"notify": True, "strategy": _STRATEGY_VALS[0]}
                 _cfg_changed = True
+        if wl_cfg.get("_symbols") != symbols_raw:
+            wl_cfg["_symbols"] = symbols_raw
+            _cfg_changed = True
         if _cfg_changed:
             _save_watchlist_cfg(wl_cfg)
     else:

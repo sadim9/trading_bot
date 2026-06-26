@@ -170,6 +170,17 @@ async def run_signal_cycle(symbols: list, watchlist_cfg: dict, engine, settings:
                 except Exception as _e:
                     log.warning(f"  {symbol}: OHLCV save failed: {_e}")
 
+                # Close any open alert-log entries whose SL/TP has been crossed
+                try:
+                    from dashboard.alert_log import update_alert_outcomes
+                    _cur_px = float(df["Close"].iloc[-1]) if len(df) > 0 else None
+                    if _cur_px:
+                        _n_closed = update_alert_outcomes(symbol, _cur_px)
+                        if _n_closed:
+                            log.info(f"  {symbol}: closed {_n_closed} alert(s) with realized P&L")
+                except Exception as _pnl_err:
+                    log.warning(f"  {symbol}: alert P&L update failed: {_pnl_err}")
+
                 # Persist signal record
                 sig_rec = Signal(
                     user_id           = WORKER_USER_ID or None,
@@ -337,11 +348,11 @@ async def main():
         settings      = _load_json(_SETTINGS_FILE)
         watchlist_cfg = _load_json(_WATCHLIST_FILE)
 
-        wl_symbols  = list(watchlist_cfg.keys())
+        # Skip meta-keys (prefixed with _) stored in the JSON for UI persistence
+        wl_symbols  = [k for k in watchlist_cfg.keys() if not k.startswith("_")]
         cfg_symbols = CONFIG.data.default_symbols
-        all_symbols = wl_symbols + [s for s in cfg_symbols if s not in wl_symbols]
-        if not all_symbols:
-            all_symbols = cfg_symbols
+        # Only fall back to hardcoded defaults when watchlist is completely empty
+        all_symbols = wl_symbols if wl_symbols else cfg_symbols
 
         engine = None
         try:
